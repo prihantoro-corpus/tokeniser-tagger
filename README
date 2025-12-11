@@ -1,0 +1,77 @@
+This is a comprehensive README file for your Streamlit application, acknowledging all the Python libraries used for both the multilingual interface and the core language processing components (Japanese and English).
+
+-----
+
+# 🌐 Multilingual Tokenizer & Tagger Web App
+
+This is a Streamlit application designed for batch processing and linguistic annotation of text files. It supports multiple languages, providing tokenization, Part-of-Speech (POS) tagging, and lemmatization, then compiling the results into standardized XML files (TreeTagger format) for easy corpus analysis.
+
+## ✨ Features
+
+  * **Multilingual Support:** Currently supports Japanese and English.
+  * **Batch Processing:** Upload one or more `.txt` files in a single session.
+  * **Accurate Tagging:** Uses high-quality, dedicated NLP libraries for each language.
+  * **Standardized Output:** Results are formatted as tab-separated values (token\\tPOS\\tlemma) enclosed in a single XML file per input, then compressed into a single downloadable ZIP archive.
+
+## 🛠️ Technology Stack & Acknowledgements
+
+This application is built entirely using Python and several powerful open-source libraries.
+
+| Component | Library | Purpose | Acknowledgement |
+| :--- | :--- | :--- | :--- |
+| **Web Framework** | `streamlit` | Creates the interactive, shareable web interface. | Streamlit, Inc. |
+| **Japanese NLP** | `fugashi` & `unidic-lite` | Provides efficient tokenization, POS tagging, and lemmatization using MeCab with the UniDic dictionary. | @polm (Fugashi), NAIST (UniDic) |
+| **English NLP** | `nltk` (Core) & `nltk.corpus` | Provides tokenization, robust Part-of-Speech tagging, and accurate WordNet-based lemmatization. | The NLTK Project |
+| **Data Handling** | `pandas` | Used internally for robust handling and manipulation of tabular data. | The pandas development team |
+| **File Compression** | `zipfile`, `io` | Manages the creation and delivery of the ZIP archive in memory. | Python Standard Library |
+
+## 🚀 Deployment
+
+### Prerequisites
+
+To deploy this application, you must have the following files in your root repository directory:
+
+1.  `app.py` (The main application script)
+2.  `requirements.txt` (The dependency list below)
+
+### `requirements.txt`
+
+The following packages are required for a successful installation and execution of the application on platforms like Streamlit Cloud:
+
+```text
+streamlit
+pandas
+fugashi
+unidic-lite
+nltk
+```
+
+### Running Locally
+
+1.  **Clone the repository:**
+    ```bash
+    git clone [YOUR_REPOSITORY_URL]
+    cd [YOUR_REPOSITORY_NAME]
+    ```
+2.  **Install dependencies:**
+    ```bash
+    pip install -r requirements.txt
+    ```
+3.  **Run the application:**
+    ```bash
+    streamlit run app.py
+    ```
+
+The application will automatically attempt to download the necessary NLTK data files (`averaged_perceptron_tagger`, `wordnet`, `punkt`) on first run and cache them.
+
+## 📝 XML Output Format
+
+The output XML file for each processed text adheres to the following structure:
+
+```xml
+<corpus lang="[LANG_CODE]" id="[FILENAME_ID]">
+TOKEN_1    POS_TAG_1    LEMMA_1
+TOKEN_2    POS_TAG_2    LEMMA_2
+...
+</corpus>
+```
