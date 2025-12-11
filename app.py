@@ -6,21 +6,31 @@ import re
 from io import BytesIO
 from fugashi import Tagger # For Japanese
 import nltk # For English
+# **FIX:** Explicitly import the submodule needed for the NLTK exception handling
+from nltk.downloader import DownloadError 
 
-# --- NLTK Data Installation ---
-# We use a try/except block to ensure the necessary data files are downloaded once
-# when the application starts, which is much faster than spaCy model downloads.
-try:
-    # Attempt to load the tokenizer data; download if missing
-    nltk.data.find('tokenizers/punkt')
-except nltk.downloader.DownloadError:
-    st.cache_resource(nltk.download)('punkt')
 
-try:
-    # Attempt to load the tagger data; download if missing
-    nltk.data.find('taggers/averaged_perceptron_tagger')
-except nltk.downloader.DownloadError:
-    st.cache_resource(nltk.download)('averaged_perceptron_tagger')
+# --- NLTK Data Installation (Robust Caching) ---
+@st.cache_resource
+def download_nltk_data():
+    """Downloads necessary NLTK data files using cached resource."""
+    try:
+        # Punctuation tokenizer data
+        nltk.data.find('tokenizers/punkt')
+    except DownloadError:
+        nltk.download('punkt')
+
+    try:
+        # POS tagger data
+        nltk.data.find('taggers/averaged_perceptron_tagger')
+    except DownloadError:
+        nltk.download('averaged_perceptron_tagger')
+    
+    st.info("NLTK data (Punkt & POS Tagger) successfully verified/downloaded.")
+    return True
+
+# Call the function once at startup
+NLTK_DATA_READY = download_nltk_data()
 
 
 # --- Global Configuration and State Management ---
@@ -33,7 +43,7 @@ def get_japanese_tokenizer():
         tagger = Tagger()
         return tagger
     except Exception as e:
-        st.error(f"Error initializing Japanese Tokenizer (Fugashi/MeCab). Dependencies missing? Error: {e}")
+        st.error(f"Error initializing Japanese Tokenizer (Fugashi/MeCab). Error: {e}")
         return None
 
 # Global Variables to hold the tagger instances
@@ -42,7 +52,7 @@ JAPANESE_TAGGER = get_japanese_tokenizer()
 
 # --- Core Processing Functions ---
 
-# --- JAPANESE PROCESSING (No Change) ---
+# --- JAPANESE PROCESSING ---
 def process_text_japanese(text):
     """Tokenizes and tags a single Japanese text string using Fugashi."""
     if JAPANESE_TAGGER is None:
@@ -58,7 +68,7 @@ def process_text_japanese(text):
             results.append([token, pos, lemma])
     return results if results else None
 
-# --- ENGLISH PROCESSING (NEW NLTK IMPLEMENTATION) ---
+# --- ENGLISH PROCESSING ---
 def process_text_english(text):
     """Tokenizes and tags a single English text string using NLTK."""
     
@@ -73,12 +83,8 @@ def process_text_english(text):
         # 3. Perform POS tagging (NLTK's default tagset is Penn Treebank)
         tagged_words = nltk.pos_tag(words)
         
-        # 4. NLTK does not have a built-in lemmatizer as fast as spaCy's, 
-        # but we can use the default tagger output for token/POS and use the token as the lemma.
-        # If strict lemmatization is needed, we would add the WordNetLemmatizer, but for speed, we'll simplify.
-        
+        # 4. Use the token as the lemma (simplified NLTK approach for speed)
         for token, pos_tag in tagged_words:
-            # NLTK uses the token as the default lemma if not explicitly lemmatized
             lemma = token 
             # Output format: Token [TAB] POS_Tag [TAB] Lemma
             results.append([token, pos_tag, lemma])
@@ -86,7 +92,7 @@ def process_text_english(text):
     return results if results else None
 
 
-# --- XML Creation and Zipping (No Change) ---
+# --- XML Creation and Zipping ---
 
 def create_xml_content(data_list, original_filename, lang_code):
     """
@@ -138,7 +144,7 @@ def create_zip_archive(output_data, lang_code):
     return zip_buffer.getvalue()
 
 
-# --- Streamlit UI Components (No functional change, just calling the new NLTK logic) ---
+# --- Streamlit UI Components ---
 
 def language_selector_page():
     st.sidebar.title("🛠️ Tools")
