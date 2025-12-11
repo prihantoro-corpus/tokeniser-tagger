@@ -2,4 +2,4 @@ streamlit
 pandas
 fugashi
 unidic-lite
-nltk
+textblob
