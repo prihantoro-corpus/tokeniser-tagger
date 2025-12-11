@@ -7,32 +7,34 @@ from io import BytesIO
 from fugashi import Tagger # For Japanese
 import nltk # For English
 
-# --- NLTK Data Installation (Robust Caching) ---
+# --- NLTK Data Installation (Final Robust Fix) ---
 @st.cache_resource
 def download_nltk_data():
-    """Downloads necessary NLTK data files using cached resource."""
-    # We must install the data files using nltk.download()
+    """Downloads necessary NLTK data files to a writable location."""
     
-    # 1. Punkt (Sentence and Word Tokenizer data)
-    try:
-        nltk.data.find('tokenizers/punkt')
-    except Exception as e:
-        # Catch general exception, then check if it's the specific DownloadError string
-        if 'DownloadError' in str(e):
-            nltk.download('punkt')
-        else:
-            raise e # Re-raise if it's an unexpected error
+    # CRITICAL FIX: Set the NLTK data path to the current working directory (.) 
+    # to ensure the app has write permissions.
+    import nltk.data
+    # Check if the path is already included to prevent duplicates on reruns
+    if '.' not in nltk.data.path:
+        nltk.data.path.append('.') # Add current directory to search path
 
-    # 2. Averaged Perceptron Tagger (POS Tagging data)
-    try:
-        nltk.data.find('taggers/averaged_perceptron_tagger')
-    except Exception as e:
-        if 'DownloadError' in str(e):
-            nltk.download('averaged_perceptron_tagger')
-        else:
-            raise e # Re-raise if it's an unexpected error
+    # Helper function to download if needed
+    def check_and_download(resource_name, package_name):
+        try:
+            # Check if the resource is available in the current search path
+            nltk.data.find(resource_name)
+        except LookupError:
+            # If not found, download it to the current directory ('.')
+            # The directory '.' is the default download location when running from the app root.
+            # We download the package name, not the full resource path
+            nltk.download(package_name, download_dir='.')
+            
+    # Download the required resources
+    check_and_download('tokenizers/punkt', 'punkt')
+    check_and_download('taggers/averaged_perceptron_tagger', 'averaged_perceptron_tagger')
     
-    st.info("NLTK data (Punkt & POS Tagger) successfully verified/downloaded.")
+    st.info("NLTK data (Punkt & POS Tagger) successfully loaded from the local application path.")
     return True
 
 # Call the function once at startup
