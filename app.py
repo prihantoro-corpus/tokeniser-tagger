@@ -5,40 +5,7 @@ import zipfile
 import re
 from io import BytesIO
 from fugashi import Tagger # For Japanese
-import nltk # For English
-from nltk.tag import PerceptronTagger # Import the specific tagger class
-
-# --- NLTK Data Installation (Final Robust Fix) ---
-@st.cache_resource
-def download_nltk_data():
-    """Downloads necessary NLTK data files to a writable location."""
-    
-    # CRITICAL FIX: Set the NLTK data path to the current working directory (.) 
-    # to ensure the app has write permissions.
-    import nltk.data
-    # Check if the path is already included to prevent duplicates on reruns
-    if '.' not in nltk.data.path:
-        nltk.data.path.append('.') # Add current directory to search path
-
-    # Helper function to download if needed
-    def check_and_download(resource_name, package_name):
-        try:
-            # Check if the resource is available in the current search path
-            nltk.data.find(resource_name)
-        except LookupError:
-            # If not found, download it to the current directory ('.')
-            nltk.download(package_name, download_dir='.')
-            
-    # Download the required resources (We only need the standard tagger)
-    check_and_download('tokenizers/punkt', 'punkt') # Keep punkt for safety, though not used for tokenization
-    check_and_download('taggers/averaged_perceptron_tagger', 'averaged_perceptron_tagger')
-    
-    st.info("NLTK data (Punkt & POS Tagger) successfully loaded from the local application path.")
-    return True
-
-# Call the function once at startup
-NLTK_DATA_READY = download_nltk_data()
-
+from textblob import TextBlob # For English
 
 # --- Global Configuration and State Management ---
 
@@ -53,22 +20,29 @@ def get_japanese_tokenizer():
         st.error(f"Error initializing Japanese Tokenizer (Fugashi/MeCab). Error: {e}")
         return None
 
-# --- ENGLISH TAGGER MODEL INSTANCE ---
+# --- ENGLISH TEXTBLOB SETUP ---
 @st.cache_resource
-def get_english_tagger_instance():
-    """Initializes the Averaged Perceptron Tagger instance explicitly."""
+def initialize_english_textblob():
+    """Ensures TextBlob data is downloaded (relies on NLTK data structure)."""
+    # This command checks if necessary NLTK corpora for TextBlob are present.
+    # It is safer than custom NLTK code as it uses TextBlob's wrapper.
+    import nltk
     try:
-        # Load the model directly from the data file path.
-        # We must use the ._LOAD_ENGLISH_TAGGER attribute to get the default model instance
-        # from the downloaded resource, bypassing the problematic nltk.pos_tag() logic.
-        return PerceptronTagger._load_english()
-    except Exception as e:
-        st.error(f"FATAL ERROR: Could not load Averaged Perceptron Tagger instance. Error: {e}")
-        return None
-        
+        # Check for the tagger data TextBlob uses
+        nltk.data.find('taggers/averaged_perceptron_tagger')
+    except:
+        st.info("Downloading TextBlob data (needed for English Tagging)...")
+        import subprocess
+        import sys
+        # Use subprocess to install TextBlob's NLTK data safely
+        subprocess.check_call([sys.executable, "-m", "textblob.download_corpora"])
+    
+    st.info("English TextBlob Tagger is ready.")
+    return True
+
 # Global Variables to hold the tagger instances
 JAPANESE_TAGGER = get_japanese_tokenizer()
-ENGLISH_TAGGER_INSTANCE = get_english_tagger_instance()
+ENGLISH_TAGGER_READY = initialize_english_textblob()
 
 
 # --- Core Processing Functions ---
@@ -89,30 +63,22 @@ def process_text_japanese(text):
             results.append([token, pos, lemma])
     return results if results else None
 
-# --- ENGLISH PROCESSING (FINAL ROBUST IMPLEMENTATION) ---
+# --- ENGLISH PROCESSING (TEXTBLOB IMPLEMENTATION) ---
 def process_text_english(text):
-    """Tokenizes and tags a single English text string using Regex and explicit NLTK tagger instance."""
+    """Tokenizes and tags a single English text string using TextBlob."""
     
-    if ENGLISH_TAGGER_INSTANCE is None:
-        st.error("English Tagger model is not available.")
+    if not ENGLISH_TAGGER_READY:
+        st.error("English TextBlob data is not loaded.")
         return None
         
-    # 1. Regex Tokenization
-    tokens = re.findall(r"\w+|[^\s\w]+", text)
-    words = [token.strip() for token in tokens if token.strip()]
-    
-    if not words:
-        return None
-        
-    # 2. Perform POS tagging using the explicitly loaded model instance
-    # We use the instance's tag() method, bypassing the problematic nltk.pos_tag() function.
-    tagged_words = ENGLISH_TAGGER_INSTANCE.tag(words)
-    
+    blob = TextBlob(text)
     results = []
-    # 3. Compile results
-    for token, pos_tag in tagged_words:
-        # Use the token as the lemma (simplified NLTK approach)
-        lemma = token 
+
+    # TextBlob's tags property returns a list of (word, tag) tuples
+    for token, pos_tag in blob.tags:
+        # TextBlob includes a .lemmatize() method, which is safer than just using the token
+        lemma = blob.word_tokenizer.tokenize(token)[0].lemmatize(pos_tag) 
+        
         # Output format: Token [TAB] POS_Tag [TAB] Lemma
         results.append([token, pos_tag, lemma])
     
