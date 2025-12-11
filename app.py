@@ -1,0 +1,214 @@
+import streamlit as st
+import pandas as pd
+import os
+import zipfile
+import re
+import tempfile
+from io import BytesIO
+from fugashi import Tagger
+
+# --- Configuration and State Management ---
+
+# Use st.cache_resource for the tokenizer to prevent re-initialization on every rerun
+# Fugashi/MeCab must be installed and initialized only once.
+@st.cache_resource
+def get_japanese_tokenizer():
+    """Initializes and returns the Fugashi Tagger with unidic-lite."""
+    try:
+        # Note: In a true Streamlit deployment (like Streamlit Cloud), 
+        # dependencies (fugashi, unidic-lite) must be listed in requirements.txt.
+        # Streamlit handles installation, so we just initialize here.
+        tagger = Tagger()
+        return tagger
+    except Exception as e:
+        # If initialization fails (e.g., dictionary missing), provide an error message.
+        st.error(f"Error initializing Japanese Tokenizer (Fugashi/MeCab): {e}")
+        st.stop()
+        return None
+
+# Global Variable to hold the tagger instance
+JAPANESE_TAGGER = get_japanese_tokenizer()
+
+
+# --- Core Processing Functions ---
+
+def process_text_japanese(text):
+    """Tokenizes and tags a single Japanese text string using Fugashi."""
+    if JAPANESE_TAGGER is None:
+        return None
+
+    nodes = JAPANESE_TAGGER.parseToNodeList(text)
+    results = []
+
+    for node in nodes:
+        if node.surface:
+            token = node.surface
+            # Unidic features
+            pos = node.feature.pos1
+            lemma = node.feature.lemma if node.feature.lemma else token
+            
+            # Store raw data for the tab-separated format
+            results.append([token, pos, lemma])
+
+    if results:
+        # Use simple list of lists for direct XML/TT output, no need for full DataFrame structure
+        return results
+    else:
+        return None
+
+def create_xml_content(data_list, original_filename):
+    """
+    Converts the tokenized list into the requested XML string format 
+    with tab-separated (token\tpos\tlemma) content, and sanitizes the filename for the 'id' attribute.
+    """
+    # Sanitize the filename for the XML ID
+    base_filename = os.path.splitext(original_filename)[0]
+    # Remove common file extensions and Colab's default duplicate-naming pattern: ' (n)'
+    sanitized_id = re.sub(r' \(\d+\)$', '', base_filename).strip()
+    
+    # 1. Start the corpus tag
+    xml_lines = [f'<corpus lang="JP" id="{sanitized_id}">']
+    
+    # 2. Generate the tab-separated content block
+    content_block = []
+    for token, pos, lemma in data_list:
+        # TreeTagger format: token \t POS tag \t lemma
+        line = f"{token}\t{pos}\t{lemma}"
+        content_block.append(line)
+        
+    # Join the content block
+    xml_lines.append("\n".join(content_block))
+        
+    # 3. End the corpus tag
+    xml_lines.append('</corpus>')
+    
+    return "\n".join(xml_lines)
+
+
+def create_zip_archive(output_data):
+    """Creates a zip archive in memory and returns the bytes."""
+    zip_buffer = BytesIO()
+    
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for original_name, data_list in output_data.items():
+            
+            xml_content = create_xml_content(data_list, original_name)
+            
+            # Sanitize the filename for the XML file itself (similar to ID)
+            base_name = os.path.splitext(original_name)[0]
+            sanitized_base_name = re.sub(r' \(\d+\)$', '', base_name).strip()
+            xml_name = f"{sanitized_base_name}_tagged.xml"
+            
+            # Write the XML content to the zip file
+            zf.writestr(xml_name, xml_content.encode('utf-8'))
+
+    zip_buffer.seek(0)
+    return zip_buffer.getvalue()
+
+
+# --- Streamlit UI Components ---
+
+def language_selector_page():
+    st.sidebar.title("🛠️ Tools")
+    st.sidebar.header("Select Language Tokenizer")
+    
+    # Use a radio button for language selection
+    language = st.sidebar.radio(
+        "Choose a language for tagging:",
+        ('JAPANESE', 'ENGLISH (Future)', 'FRENCH (Future)'),
+        index=0 # Default to JAPANESE
+    )
+    
+    if language == 'JAPANESE':
+        japanese_tokenizer_interface()
+    else:
+        st.info(f"The {language} tokenizer is not yet implemented. Please select JAPANESE.")
+
+def japanese_tokenizer_interface():
+    st.header("🇯🇵 Japanese Tokenizer and Tagger")
+    st.markdown("---")
+
+    st.subheader("Upload Text Files")
+    st.markdown("Upload one or more `.txt` files containing Japanese text. Results will be returned as XML files (TreeTagger format) in a single ZIP file.")
+    
+    uploaded_files = st.file_uploader(
+        "Choose files",
+        type=['txt'],
+        accept_multiple_files=True,
+        help="Ensure your text files are encoded in UTF-8."
+    )
+
+    if uploaded_files:
+        if st.button("Start Tagging and Create XML Archive"):
+            
+            output_data = {}
+            progress_bar = st.progress(0, text="Processing files...")
+            
+            # --- Processing Loop ---
+            for i, uploaded_file in enumerate(uploaded_files):
+                filename = uploaded_file.name
+                
+                try:
+                    # Read and decode content bytes to UTF-8 text string
+                    content_bytes = uploaded_file.read()
+                    text = content_bytes.decode('utf-8')
+                    
+                    data_list = process_text_japanese(text)
+                    
+                    if data_list:
+                        output_data[filename] = data_list
+                        st.success(f"✅ Processed: **{filename}** ({len(data_list)} tokens)")
+                    else:
+                        st.warning(f"⚠️ Warning: No tokens found in {filename}.")
+                        
+                except Exception as e:
+                    st.error(f"❌ Failed to process {filename}: {e}")
+                
+                # Update progress bar
+                progress_bar.progress((i + 1) / len(uploaded_files), text=f"Processed {i+1} of {len(uploaded_files)} files...")
+            
+            progress_bar.empty()
+            
+            # --- Output/Download ---
+            if output_data:
+                
+                # 1. Create the ZIP archive bytes
+                with st.spinner('Creating XML and zipping results...'):
+                    zip_bytes = create_zip_archive(output_data)
+                
+                st.subheader("Download Results")
+                st.success("Processing complete! Download your results below.")
+                
+                # 2. Provide the download button
+                st.download_button(
+                    label="⬇️ Download Tagged XML (ZIP)",
+                    data=zip_bytes,
+                    file_name="japanese_tagged_results_xml_ttformat.zip",
+                    mime="application/zip"
+                )
+                st.info("The ZIP file contains XML files in TreeTagger format (token\\tPOS\\tlemma).")
+            else:
+                st.error("No valid text files were successfully processed.")
+
+def main():
+    st.set_page_config(
+        page_title="Multilingual Tokenizer & Tagger",
+        layout="wide",
+        initial_sidebar_state="expanded"
+    )
+    st.title("🌐 Multilingual Tokenizer & Tagger Web App")
+    st.markdown("This application provides linguistic annotation services for various languages.")
+    
+    # Start the main interface
+    language_selector_page()
+
+if __name__ == "__main__":
+    main()
+
+# --- Required File for GitHub/Streamlit Cloud ---
+# Ensure you create a file named 'requirements.txt' in your repository with:
+# streamlit
+# pandas
+# fugashi
+# unidic-lite
+# -----------------------------------------------
