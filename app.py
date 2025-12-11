@@ -3,11 +3,40 @@ import pandas as pd
 import os
 import zipfile
 import re
-import subprocess
-import sys
 from io import BytesIO
 from fugashi import Tagger # For Japanese
-from textblob import TextBlob # For English
+import nltk # For English Tagging
+# The 'pattern' library contains a fast, pure-Python lemmatizer
+import pattern.en as pattern_en 
+
+# --- NLTK Data Installation (Robust Caching) ---
+@st.cache_resource
+def download_nltk_data():
+    """Downloads necessary NLTK data files to a writable location."""
+    
+    # Set the NLTK data path to the current working directory (.) 
+    import nltk.data
+    if '.' not in nltk.data.path:
+        nltk.data.path.append('.') 
+
+    # Helper function to download if needed
+    def check_and_download(resource_name, package_name):
+        try:
+            nltk.data.find(resource_name)
+        except LookupError:
+            # Download to the current directory
+            nltk.download(package_name, download_dir='.')
+            
+    # We only need the POS tagger data
+    check_and_download('taggers/averaged_perceptron_tagger', 'averaged_perceptron_tagger')
+    check_and_download('tokenizers/punkt', 'punkt') # Punkt data is still useful for NLTK internals
+    
+    st.info("NLTK data (POS Tagger) loaded successfully.")
+    return True
+
+# Call the function once at startup
+NLTK_DATA_READY = download_nltk_data()
+
 
 # --- Global Configuration and State Management ---
 
@@ -22,24 +51,8 @@ def get_japanese_tokenizer():
         st.error(f"Error initializing Japanese Tokenizer (Fugashi/MeCab). Error: {e}")
         return None
 
-# --- ENGLISH TEXTBLOB SETUP ---
-@st.cache_resource
-def initialize_english_textblob():
-    """Ensures TextBlob data is downloaded."""
-    try:
-        import nltk
-        nltk.data.find('taggers/averaged_perceptron_tagger')
-    except:
-        st.info("Downloading TextBlob data (needed for English Tagging)...")
-        # Use subprocess to install TextBlob's NLTK data safely
-        subprocess.check_call([sys.executable, "-m", "textblob.download_corpora"])
-    
-    st.info("English TextBlob Tagger is ready.")
-    return True
-
 # Global Variables to hold the tagger instances
 JAPANESE_TAGGER = get_japanese_tokenizer()
-ENGLISH_TAGGER_READY = initialize_english_textblob()
 
 
 # --- Core Processing Functions ---
@@ -60,26 +73,34 @@ def process_text_japanese(text):
             results.append([token, pos, lemma])
     return results if results else None
 
-# --- ENGLISH PROCESSING (FINAL ROBUST IMPLEMENTATION) ---
+# --- ENGLISH PROCESSING (NLTK + PATTERN.EN Lemmatization) ---
 def process_text_english(text):
-    """Tokenizes and tags a single English text string using TextBlob for POS/Tags 
-       and token as lemma."""
+    """Tokenizes, tags (NLTK), and lemmatizes (Pattern.en) English text."""
     
-    if not ENGLISH_TAGGER_READY:
-        st.error("English TextBlob data is not loaded.")
+    if not NLTK_DATA_READY:
+        st.error("NLTK data is not loaded. Cannot tag English.")
         return None
         
-    # TextBlob handles tokenization internally when creating the blob object
-    blob = TextBlob(text)
+    # 1. NLTK Sentence and Word Tokenization
+    sentences = nltk.sent_tokenize(text)
     results = []
 
-    # TextBlob's tags property returns a list of (token, pos_tag) tuples
-    for token, pos_tag in blob.tags:
-        # Use the token itself as the lemma for simplicity and robustness
-        lemma = token 
+    for sentence in sentences:
+        words = nltk.word_tokenize(sentence)
         
-        # Output format: Token [TAB] POS_Tag [TAB] Lemma
-        results.append([token, pos_tag, lemma])
+        # 2. POS Tagging
+        tagged_words = nltk.pos_tag(words)
+        
+        # 3. Lemmatization using Pattern.en for high-speed, pure-Python results
+        for token, pos_tag in tagged_words:
+            # Convert Penn Treebank tag to a simpler tag (used by some lemmatizers)
+            simple_tag = pattern_en.map.treebank2wntags(pos_tag)
+            
+            # Pattern.en lemmatizer call
+            lemma = pattern_en.lemma(token, simple_tag)
+            
+            # Output format: Token [TAB] POS_Tag [TAB] Lemma
+            results.append([token, pos_tag, lemma])
     
     return results if results else None
 
