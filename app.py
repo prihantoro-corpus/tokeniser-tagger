@@ -3,35 +3,49 @@ import pandas as pd
 import os
 import zipfile
 import re
-import tempfile
 from io import BytesIO
-from fugashi import Tagger
+from fugashi import Tagger # For Japanese
+import spacy # For English
 
-# --- Configuration and State Management ---
+# --- Global Configuration and State Management ---
 
-# Use st.cache_resource for the tokenizer to prevent re-initialization on every rerun
-# Fugashi/MeCab must be installed and initialized only once.
+# --- JAPANESE TOKENIZER ---
 @st.cache_resource
 def get_japanese_tokenizer():
     """Initializes and returns the Fugashi Tagger with unidic-lite."""
     try:
-        # Note: In a true Streamlit deployment (like Streamlit Cloud), 
-        # dependencies (fugashi, unidic-lite) must be listed in requirements.txt.
-        # Streamlit handles installation, so we just initialize here.
         tagger = Tagger()
         return tagger
     except Exception as e:
-        # If initialization fails (e.g., dictionary missing), provide an error message.
-        st.error(f"Error initializing Japanese Tokenizer (Fugashi/MeCab): {e}")
-        st.stop()
+        st.error(f"Error initializing Japanese Tokenizer (Fugashi/MeCab). Dependencies missing? Error: {e}")
         return None
 
-# Global Variable to hold the tagger instance
+# --- ENGLISH TOKENIZER ---
+@st.cache_resource
+def get_english_tokenizer():
+    """Initializes and returns the English spaCy model."""
+    try:
+        # Streamlit deployment assumes 'en_core_web_sm' is available if listed in requirements.txt
+        nlp = spacy.load("en_core_web_sm")
+        return nlp
+    except OSError:
+        # Fallback installation if running locally or in a non-standard environment
+        try:
+            spacy.cli.download("en_core_web_sm")
+            nlp = spacy.load("en_core_web_sm")
+            return nlp
+        except Exception as e:
+            st.error(f"Error initializing English Tokenizer (spaCy). Did you include 'spacy' and 'en_core_web_sm' in requirements.txt? Error: {e}")
+            return None
+
+# Global Variables to hold the tagger instances
 JAPANESE_TAGGER = get_japanese_tokenizer()
+ENGLISH_TAGGER = get_english_tokenizer()
 
 
 # --- Core Processing Functions ---
 
+# --- JAPANESE PROCESSING ---
 def process_text_japanese(text):
     """Tokenizes and tags a single Japanese text string using Fugashi."""
     if JAPANESE_TAGGER is None:
@@ -39,40 +53,54 @@ def process_text_japanese(text):
 
     nodes = JAPANESE_TAGGER.parseToNodeList(text)
     results = []
-
     for node in nodes:
         if node.surface:
             token = node.surface
-            # Unidic features
             pos = node.feature.pos1
             lemma = node.feature.lemma if node.feature.lemma else token
-            
-            # Store raw data for the tab-separated format
             results.append([token, pos, lemma])
+    return results if results else None
 
-    if results:
-        # Use simple list of lists for direct XML/TT output, no need for full DataFrame structure
-        return results
-    else:
+# --- ENGLISH PROCESSING ---
+def process_text_english(text):
+    """Tokenizes and tags a single English text string using spaCy."""
+    if ENGLISH_TAGGER is None:
         return None
+    
+    doc = ENGLISH_TAGGER(text)
+    results = []
+    
+    # The output format is: Token [TAB] POS_Tag [TAB] Lemma
+    for token in doc:
+        # Filter out common whitespace/newline tokens that might clutter the output
+        if not token.is_space:
+            # token.tag_ is the detailed POS (like VBD, NNP)
+            # token.lemma_ is the base form
+            results.append([token.text, token.tag_, token.lemma_])
+    
+    return results if results else None
 
-def create_xml_content(data_list, original_filename):
+
+# --- XML Creation and Zipping ---
+
+def create_xml_content(data_list, original_filename, lang_code):
     """
     Converts the tokenized list into the requested XML string format 
-    with tab-separated (token\tpos\tlemma) content, and sanitizes the filename for the 'id' attribute.
+    (token\tpos\tlemma content) and sanitizes the filename for the 'id' attribute.
     """
     # Sanitize the filename for the XML ID
     base_filename = os.path.splitext(original_filename)[0]
-    # Remove common file extensions and Colab's default duplicate-naming pattern: ' (n)'
+    # Remove Colab's default duplicate-naming pattern: ' (n)'
     sanitized_id = re.sub(r' \(\d+\)$', '', base_filename).strip()
     
     # 1. Start the corpus tag
-    xml_lines = [f'<corpus lang="JP" id="{sanitized_id}">']
+    xml_lines = [f'<corpus lang="{lang_code}" id="{sanitized_id}">']
     
     # 2. Generate the tab-separated content block
     content_block = []
     for token, pos, lemma in data_list:
         # TreeTagger format: token \t POS tag \t lemma
+        # The content should be tab-separated, and placed on a new line after the opening tag
         line = f"{token}\t{pos}\t{lemma}"
         content_block.append(line)
         
@@ -80,19 +108,19 @@ def create_xml_content(data_list, original_filename):
     xml_lines.append("\n".join(content_block))
         
     # 3. End the corpus tag
-    xml_lines.append('</corpus>')
+    xml_lines.append(f'</corpus lang="{lang_code}" id="{sanitized_id}">') # Colab script used closing tag with ID/Lang
     
     return "\n".join(xml_lines)
 
 
-def create_zip_archive(output_data):
+def create_zip_archive(output_data, lang_code):
     """Creates a zip archive in memory and returns the bytes."""
     zip_buffer = BytesIO()
     
     with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
         for original_name, data_list in output_data.items():
             
-            xml_content = create_xml_content(data_list, original_name)
+            xml_content = create_xml_content(data_list, original_name, lang_code)
             
             # Sanitize the filename for the XML file itself (similar to ID)
             base_name = os.path.splitext(original_name)[0]
@@ -112,24 +140,35 @@ def language_selector_page():
     st.sidebar.title("🛠️ Tools")
     st.sidebar.header("Select Language Tokenizer")
     
-    # Use a radio button for language selection
     language = st.sidebar.radio(
         "Choose a language for tagging:",
-        ('JAPANESE', 'ENGLISH (Future)', 'FRENCH (Future)'),
+        ('JAPANESE', 'ENGLISH', 'FRENCH (Future)'),
         index=0 # Default to JAPANESE
     )
     
     if language == 'JAPANESE':
-        japanese_tokenizer_interface()
+        tokenizer_interface(
+            lang_name="Japanese", 
+            lang_code="JP", 
+            tagger_func=process_text_japanese
+        )
+    elif language == 'ENGLISH':
+        tokenizer_interface(
+            lang_name="English", 
+            lang_code="EN", 
+            tagger_func=process_text_english
+        )
     else:
-        st.info(f"The {language} tokenizer is not yet implemented. Please select JAPANESE.")
+        st.info(f"The {language} tokenizer is not yet implemented. Please select JAPANESE or ENGLISH.")
 
-def japanese_tokenizer_interface():
-    st.header("🇯🇵 Japanese Tokenizer and Tagger")
+def tokenizer_interface(lang_name, lang_code, tagger_func):
+    """General interface for uploading files and displaying the download button."""
+    
+    st.header(f"🌎 {lang_name} Tokenizer and Tagger ({lang_code})")
     st.markdown("---")
 
     st.subheader("Upload Text Files")
-    st.markdown("Upload one or more `.txt` files containing Japanese text. Results will be returned as XML files (TreeTagger format) in a single ZIP file.")
+    st.markdown("Upload one or more `.txt` files. Results will be returned as XML files (TreeTagger format) in a single ZIP file.")
     
     uploaded_files = st.file_uploader(
         "Choose files",
@@ -139,7 +178,7 @@ def japanese_tokenizer_interface():
     )
 
     if uploaded_files:
-        if st.button("Start Tagging and Create XML Archive"):
+        if st.button(f"Start {lang_name} Tagging and Create XML Archive"):
             
             output_data = {}
             progress_bar = st.progress(0, text="Processing files...")
@@ -153,7 +192,7 @@ def japanese_tokenizer_interface():
                     content_bytes = uploaded_file.read()
                     text = content_bytes.decode('utf-8')
                     
-                    data_list = process_text_japanese(text)
+                    data_list = tagger_func(text)
                     
                     if data_list:
                         output_data[filename] = data_list
@@ -174,16 +213,16 @@ def japanese_tokenizer_interface():
                 
                 # 1. Create the ZIP archive bytes
                 with st.spinner('Creating XML and zipping results...'):
-                    zip_bytes = create_zip_archive(output_data)
+                    zip_bytes = create_zip_archive(output_data, lang_code)
                 
                 st.subheader("Download Results")
                 st.success("Processing complete! Download your results below.")
                 
                 # 2. Provide the download button
                 st.download_button(
-                    label="⬇️ Download Tagged XML (ZIP)",
+                    label=f"⬇️ Download {lang_name} Tagged XML (ZIP)",
                     data=zip_bytes,
-                    file_name="japanese_tagged_results_xml_ttformat.zip",
+                    file_name=f"{lang_code.lower()}_tagged_results_xml_ttformat.zip",
                     mime="application/zip"
                 )
                 st.info("The ZIP file contains XML files in TreeTagger format (token\\tPOS\\tlemma).")
@@ -199,16 +238,7 @@ def main():
     st.title("🌐 Multilingual Tokenizer & Tagger Web App")
     st.markdown("This application provides linguistic annotation services for various languages.")
     
-    # Start the main interface
     language_selector_page()
 
 if __name__ == "__main__":
     main()
-
-# --- Required File for GitHub/Streamlit Cloud ---
-# Ensure you create a file named 'requirements.txt' in your repository with:
-# streamlit
-# pandas
-# fugashi
-# unidic-lite
-# -----------------------------------------------
