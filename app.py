@@ -3,49 +3,14 @@ import pandas as pd
 import os
 import zipfile
 import re
+from io import BytesIO
 import subprocess
 import sys
-from io import BytesIO
+import xml.etree.ElementTree as ET # For XML parsing and reconstruction
 
-# Import components from NLTK
-import nltk
-from nltk.stem import WordNetLemmatizer
-from nltk.corpus import wordnet as wn
-
-# Import components for Japanese
-from fugashi import Tagger 
-
-
-# --- NLTK WordNet Data Installation (The Robust Fix) ---
-@st.cache_resource
-def download_nltk_data():
-    """
-    Downloads required NLTK data packages (tagger, wordnet, punkt) 
-    using the recommended internal method.
-    """
-    
-    # List of resources required for the NLTK pipeline
-    resources = ['averaged_perceptron_tagger', 'wordnet', 'punkt']
-
-    for resource in resources:
-        try:
-            # Check if resource is available
-            nltk.data.find(f'taggers/{resource}') # Using a general check path
-        except LookupError:
-            # If not found, use the downloader. This usually succeeds in Streamlit Cloud.
-            try:
-                nltk.download(resource, quiet=True)
-            except Exception as e:
-                # If the simple download fails, try the system call (less likely needed, but safer)
-                subprocess.check_call([sys.executable, "-m", "nltk.downloader", resource])
-
-    # Initialize the lemmatizer instance after data is downloaded
-    lemmatizer = WordNetLemmatizer()
-    st.info("NLTK data (POS Tagging & WordNet) loaded successfully.")
-    return lemmatizer
-
-# Global Variables
-WORDNET_LEMMATIZER = download_nltk_data()
+# Import language libraries
+from fugashi import Tagger # For Japanese
+from textblob import TextBlob # For English
 
 
 # --- Global Configuration and State Management ---
@@ -61,33 +26,33 @@ def get_japanese_tokenizer():
         st.error(f"Error initializing Japanese Tokenizer (Fugashi/MeCab). Error: {e}")
         return None
 
-# Global Variable
+# --- ENGLISH TEXTBLOB SETUP ---
+@st.cache_resource
+def initialize_english_textblob():
+    """Ensures TextBlob data is downloaded."""
+    try:
+        import nltk
+        nltk.data.find('taggers/averaged_perceptron_tagger')
+    except:
+        st.info("Downloading TextBlob data (needed for English Tagging)...")
+        # Use subprocess to install TextBlob's NLTK data safely
+        subprocess.check_call([sys.executable, "-m", "textblob.download_corpora"])
+    
+    st.info("English TextBlob Tagger is ready.")
+    return True
+
+# Global Variables
 JAPANESE_TAGGER = get_japanese_tokenizer()
-
-
-# --- Helper Function for Lemmatization ---
-def get_wordnet_pos(tag):
-    """Maps NLTK's Penn Treebank tags to the simplified WordNet format."""
-    if tag.startswith('J'): # Adjective
-        return wn.ADJ
-    elif tag.startswith('V'): # Verb
-        return wn.VERB
-    elif tag.startswith('N'): # Noun
-        return wn.NOUN
-    elif tag.startswith('R'): # Adverb
-        return wn.ADV
-    else:
-        return wn.NOUN # Default to noun for punctuation or unknown
+ENGLISH_TAGGER_READY = initialize_english_textblob()
 
 
 # --- Core Processing Functions ---
 
-# --- JAPANESE PROCESSING (No Change) ---
-def process_text_japanese(text):
+# --- JAPANESE PROCESSING ---
+def run_tagger_japanese(text):
     """Tokenizes and tags a single Japanese text string using Fugashi."""
     if JAPANESE_TAGGER is None:
-        return None
-
+        return []
     nodes = JAPANESE_TAGGER.parseToNodeList(text)
     results = []
     for node in nodes:
@@ -95,92 +60,111 @@ def process_text_japanese(text):
             token = node.surface
             pos = node.feature.pos1
             lemma = node.feature.lemma if node.feature.lemma else token
-            results.append([token, pos, lemma])
-    return results if results else None
+            # Output: token \t POS \t lemma
+            results.append(f"{token}\t{pos}\t{lemma}")
+    return results
 
-# --- ENGLISH PROCESSING (NLTK WordNet Lemmatization) ---
-def process_text_english(text):
-    """Tokenizes, tags, and accurately lemmatizes English text using NLTK."""
-    
-    if WORDNET_LEMMATIZER is None:
-        st.error("English Lemmatizer is not initialized.")
-        return None
+# --- ENGLISH PROCESSING ---
+def run_tagger_english(text):
+    """Tokenizes and tags a single English text string using TextBlob."""
+    if not ENGLISH_TAGGER_READY:
+        return []
         
-    # 1. Tokenize text
-    tokens = nltk.word_tokenize(text)
-    
-    # 2. POS Tagging (Penn Treebank format)
-    tagged_tokens = nltk.pos_tag(tokens)
-    
+    blob = TextBlob(text)
     results = []
-    
-    # 3. Lemmatize using the WordNetLemmatizer instance
-    for token, pos_tag in tagged_tokens:
-        # Get the WordNet POS tag (e.g., 'v', 'a', 'n')
-        wn_tag = get_wordnet_pos(pos_tag)
-        
-        # Perform Lemmatization
-        lemma = WORDNET_LEMMATIZER.lemmatize(token, wn_tag)
-        
-        # Output format: Token [TAB] POS_Tag [TAB] Lemma
-        results.append([token, pos_tag, lemma])
-    
-    return results if results else None
+    for token, pos_tag in blob.tags:
+        # Use token as lemma for deployment stability
+        lemma = token 
+        # Output: token \t POS \t lemma
+        results.append(f"{token}\t{pos_tag}\t{lemma}")
+    return results
 
-
-# --- XML Creation and Zipping (No Change) ---
-
-def create_xml_content(data_list, original_filename, lang_code):
+def process_xml_content(xml_string, lang_code, tagger_function):
     """
-    Converts the tokenized list into the requested XML string format 
-    (token\tpos\tlemma content) and sanitizes the filename for the 'id' attribute.
+    Parses the XML string and tags ONLY the plain text content, 
+    preserving all XML tags and attributes.
     """
-    # Sanitize the filename for the XML ID
+    
+    # 1. Add a temporary root if the input doesn't have one
+    temp_root_tag = 'TEMP_ROOT'
+    wrapped_xml = f"<{temp_root_tag}>{xml_string}</{temp_root_tag}>"
+    
+    try:
+        # We wrap the XML string in a memory file to handle encoding better
+        # This is generally more robust than ET.fromstring() on large files
+        root = ET.parse(BytesIO(wrapped_xml.encode('utf-8'))).getroot()
+    except ET.ParseError as e:
+        # If standard parsing fails (malformed XML), treat as plain text.
+        st.warning(f"Input is not valid XML ({e}). Processing as raw text only.")
+        tagged_lines = tagger_function(xml_string)
+        # Return tagged raw text wrapped in a simple tag
+        return f'<text lang="{lang_code}">\n' + "\n".join(tagged_lines) + '\n</text>'
+        
+    # 2. Function to traverse and modify the tree
+    def traverse_and_tag(element):
+        # 2a. Process the text content directly inside the current element (.text)
+        if element.text and element.text.strip():
+            tagged_lines = tagger_function(element.text)
+            # Replace the original text with the tagged lines joined by newlines
+            element.text = '\n' + '\n'.join(tagged_lines) + '\n'
+
+        # 2b. Recursively process children
+        for child in element:
+            traverse_and_tag(child)
+
+        # 2c. Process the text content that comes after a child element (.tail)
+        if element.tail and element.tail.strip():
+            tagged_lines = tagger_function(element.tail)
+            element.tail = '\n' + '\n'.join(tagged_lines) + '\n'
+
+    # 3. Start traversal and modification
+    traverse_and_tag(root)
+    
+    # 4. Reconstruct the XML string, removing the temporary root tag
+    full_xml = ET.tostring(root, encoding='unicode')
+    
+    # Remove the temporary root tag from the beginning and end
+    full_xml = full_xml.replace(f"<{temp_root_tag}>", "", 1)
+    full_xml = full_xml.replace(f"</{temp_root_tag}>", "", 1).strip()
+    
+    return full_xml
+
+def process_text(text, lang_code, tagger_function):
+    """Primary function to process the entire input text, handling XML structure."""
+    return process_xml_content(text, lang_code, tagger_function)
+
+
+# --- XML Creation and Zipping ---
+
+def create_output_file_content(processed_xml, original_filename):
+    """Creates the final XML output file content."""
+    
     base_filename = os.path.splitext(original_filename)[0]
-    # Remove Colab's default duplicate-naming pattern: ' (n)'
-    sanitized_id = re.sub(r' \(\d+\)$', '', base_filename).strip()
+    sanitized_base_name = re.sub(r' \(\d+\)$', '', base_filename).strip()
     
-    # 1. Start the corpus tag
-    xml_lines = [f'<corpus lang="{lang_code}" id="{sanitized_id}">']
+    # The output content is the raw processed XML string
+    final_output = f'<?xml version="1.0" encoding="UTF-8"?>\n{processed_xml}'
     
-    # 2. Generate the tab-separated content block
-    content_block = []
-    for token, pos, lemma in data_list:
-        # TreeTagger format: token \t POS tag \t lemma
-        line = f"{token}\t{pos}\t{lemma}"
-        content_block.append(line)
-        
-    # Join the content block
-    xml_lines.append("\n".join(content_block))
-        
-    # 3. End the corpus tag
-    xml_lines.append(f'</corpus lang="{lang_code}" id="{sanitized_id}">')
-    
-    return "\n".join(xml_lines)
+    return final_output, f"{sanitized_base_name}_tagged.xml"
 
 
-def create_zip_archive(output_data, lang_code):
+def create_zip_archive(output_data):
     """Creates a zip archive in memory and returns the bytes."""
     zip_buffer = BytesIO()
     
     with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
-        for original_name, data_list in output_data.items():
+        for original_name, processed_content in output_data.items():
             
-            xml_content = create_xml_content(data_list, original_name, lang_code)
-            
-            # Sanitize the filename for the XML file itself (similar to ID)
-            base_name = os.path.splitext(original_name)[0]
-            sanitized_base_name = re.sub(r' \(\d+\)$', '', base_name).strip()
-            xml_name = f"{sanitized_base_name}_tagged.xml"
+            final_content, xml_name = create_output_file_content(processed_content, original_name)
             
             # Write the XML content to the zip file
-            zf.writestr(xml_name, xml_content.encode('utf-8'))
+            zf.writestr(xml_name, final_content.encode('utf-8'))
 
     zip_buffer.seek(0)
     return zip_buffer.getvalue()
 
 
-# --- Streamlit UI Components (No Change) ---
+# --- Streamlit UI Components ---
 
 def language_selector_page():
     st.sidebar.title("🛠️ Tools")
@@ -189,42 +173,51 @@ def language_selector_page():
     language = st.sidebar.radio(
         "Choose a language for tagging:",
         ('JAPANESE', 'ENGLISH', 'FRENCH (Future)'),
-        index=0 # Default to JAPANESE
+        index=0
     )
     
+    tagger_func = None
+    lang_code = None
+
     if language == 'JAPANESE':
-        tokenizer_interface(
-            lang_name="Japanese", 
-            lang_code="JP", 
-            tagger_func=process_text_japanese
-        )
+        tagger_func = run_tagger_japanese
+        lang_code = "JP"
     elif language == 'ENGLISH':
+        tagger_func = run_tagger_english
+        lang_code = "EN"
+    
+    if tagger_func:
         tokenizer_interface(
-            lang_name="English", 
-            lang_code="EN", 
-            tagger_func=process_text_english
+            lang_name=language, 
+            lang_code=lang_code, 
+            tagger_function=tagger_func
         )
     else:
         st.info(f"The {language} tokenizer is not yet implemented. Please select JAPANESE or ENGLISH.")
 
-def tokenizer_interface(lang_name, lang_code, tagger_func):
+def tokenizer_interface(lang_name, lang_code, tagger_function):
     """General interface for uploading files and displaying the download button."""
     
-    st.header(f"🌎 {lang_name} Tokenizer and Tagger ({lang_code})")
+    st.header(f"🌎 {lang_name} Tokenizer and XML Preserver ({lang_code})")
     st.markdown("---")
 
-    st.subheader("Upload Text Files")
-    st.markdown("Upload one or more `.txt` files. Results will be returned as XML files (TreeTagger format) in a single ZIP file.")
+    st.subheader("Upload Text or XML Files")
+    st.markdown("""
+        Upload one or more files. The processor will **preserve all XML tags and attributes**
+        while tokenizing, tagging, and lemmatizing **only the plain text content** inside the tags.
+        
+        *Output is tab-separated (token\\tPOS\\tlemma).*
+    """)
     
     uploaded_files = st.file_uploader(
         "Choose files",
-        type=['txt'],
+        type=['txt', 'xml'], # Allow XML files as well
         accept_multiple_files=True,
         help="Ensure your text files are encoded in UTF-8."
     )
 
     if uploaded_files:
-        if st.button(f"Start {lang_name} Tagging and Create XML Archive"):
+        if st.button(f"Start Tagging and Preserve XML Structure"):
             
             output_data = {}
             progress_bar = st.progress(0, text="Processing files...")
@@ -237,13 +230,11 @@ def tokenizer_interface(lang_name, lang_code, tagger_func):
                     content_bytes = uploaded_file.read()
                     text = content_bytes.decode('utf-8')
                     
-                    data_list = tagger_func(text)
+                    # Core processing function handles XML structure preservation
+                    processed_xml = process_text(text, lang_code, tagger_function)
                     
-                    if data_list:
-                        output_data[filename] = data_list
-                        st.success(f"✅ Processed: **{filename}** ({len(data_list)} tokens)")
-                    else:
-                        st.warning(f"⚠️ Warning: No tokens found in {filename}.")
+                    output_data[filename] = processed_xml
+                    st.success(f"✅ Processed: **{filename}** (XML structure preserved)")
                         
                 except Exception as e:
                     st.error(f"❌ Failed to process {filename}: {e}")
@@ -255,21 +246,20 @@ def tokenizer_interface(lang_name, lang_code, tagger_func):
             # --- Output/Download ---
             if output_data:
                 
-                with st.spinner('Creating XML and zipping results...'):
-                    zip_bytes = create_zip_archive(output_data, lang_code)
+                with st.spinner('Creating XML files and zipping results...'):
+                    zip_bytes = create_zip_archive(output_data)
                 
                 st.subheader("Download Results")
                 st.success("Processing complete! Download your results below.")
                 
                 st.download_button(
-                    label=f"⬇️ Download {lang_name} Tagged XML (ZIP)",
+                    label=f"⬇️ Download Tagged XML Archive",
                     data=zip_bytes,
-                    file_name=f"{lang_code.lower()}_tagged_results_xml_ttformat.zip",
+                    file_name=f"{lang_code.lower()}_preserved_tagged_xml.zip",
                     mime="application/zip"
                 )
-                st.info("The ZIP file contains XML files in TreeTagger format (token\\tPOS\\tlemma).")
             else:
-                st.error("No valid text files were successfully processed.")
+                st.error("No files were successfully processed.")
 
 def main():
     st.set_page_config(
@@ -278,7 +268,7 @@ def main():
         initial_sidebar_state="expanded"
     )
     st.title("🌐 Multilingual Tokenizer & Tagger Web App")
-    st.markdown("This application provides linguistic annotation services for various languages.")
+    st.markdown("This application performs structural linguistic annotation.")
     
     language_selector_page()
 
