@@ -35,7 +35,6 @@ def initialize_english_textblob():
         nltk.data.find('taggers/averaged_perceptron_tagger')
     except:
         st.info("Downloading TextBlob data (needed for English Tagging)...")
-        # Use subprocess to install TextBlob's NLTK data safely
         subprocess.check_call([sys.executable, "-m", "textblob.download_corpora"])
     
     st.info("English TextBlob Tagger is ready.")
@@ -85,47 +84,58 @@ def process_xml_content(xml_string, lang_code, tagger_function):
     preserving all XML tags and attributes.
     """
     
-    # 1. Add a temporary root if the input doesn't have one
-    temp_root_tag = 'TEMP_ROOT'
-    wrapped_xml = f"<{temp_root_tag}>{xml_string}</{temp_root_tag}>"
+    # 1. CRITICAL FIX: Ensure the input XML is wrapped in a single root element
+    # Use a generic name that is unlikely to conflict.
+    # The input could be multiple nodes, so we wrap it all.
+    temp_root_tag = 'TEMP_WRAPPER'
+    
+    # Remove any XML declaration and CDATA to avoid parser errors
+    cleaned_xml_string = re.sub(r'<\?xml[^>]*\?>', '', xml_string, flags=re.IGNORECASE).strip()
+    
+    wrapped_xml = f"<{temp_root_tag}>{cleaned_xml_string}</{temp_root_tag}>"
     
     try:
-        # We wrap the XML string in a memory file to handle encoding better
-        # This is generally more robust than ET.fromstring() on large files
-        root = ET.parse(BytesIO(wrapped_xml.encode('utf-8'))).getroot()
+        # 2. Parse the XML
+        # Use ET.fromstring to handle the string input
+        root = ET.fromstring(wrapped_xml)
+        
     except ET.ParseError as e:
-        # If standard parsing fails (malformed XML), treat as plain text.
-        st.warning(f"Input is not valid XML ({e}). Processing as raw text only.")
+        # If standard parsing fails (malformed XML, or raw text), treat as plain text.
+        st.warning(f"Input failed XML parsing ({e}). Processing as raw text only.")
         tagged_lines = tagger_function(xml_string)
-        # Return tagged raw text wrapped in a simple tag
+        # Wrap raw tagged text in a simple <text> tag for output consistency
         return f'<text lang="{lang_code}">\n' + "\n".join(tagged_lines) + '\n</text>'
         
-    # 2. Function to traverse and modify the tree
+    # 3. Function to traverse and modify the tree
     def traverse_and_tag(element):
-        # 2a. Process the text content directly inside the current element (.text)
+        
+        # 3a. Process the text content directly inside the current element (.text)
         if element.text and element.text.strip():
+            # Get the tagged output (list of tab-separated strings)
             tagged_lines = tagger_function(element.text)
-            # Replace the original text with the tagged lines joined by newlines
+            # Replace the original text with the tagged lines, formatted for readability
             element.text = '\n' + '\n'.join(tagged_lines) + '\n'
 
-        # 2b. Recursively process children
+        # 3b. Recursively process children
         for child in element:
             traverse_and_tag(child)
 
-        # 2c. Process the text content that comes after a child element (.tail)
+        # 3c. Process the text content that comes after a child element (.tail)
         if element.tail and element.tail.strip():
             tagged_lines = tagger_function(element.tail)
             element.tail = '\n' + '\n'.join(tagged_lines) + '\n'
 
-    # 3. Start traversal and modification
+    # 4. Start traversal and modification
     traverse_and_tag(root)
     
-    # 4. Reconstruct the XML string, removing the temporary root tag
+    # 5. Reconstruct the XML string, removing the temporary root tag
+    # Use ET.tostring with encoding='unicode' to get a clean string
     full_xml = ET.tostring(root, encoding='unicode')
     
-    # Remove the temporary root tag from the beginning and end
-    full_xml = full_xml.replace(f"<{temp_root_tag}>", "", 1)
-    full_xml = full_xml.replace(f"</{temp_root_tag}>", "", 1).strip()
+    # Remove the temporary wrapper tag from the beginning and end
+    # We must be careful to remove only the wrapper tag
+    full_xml = re.sub(r'^<TEMP_WRAPPER>', '', full_xml)
+    full_xml = re.sub(r'</TEMP_WRAPPER>$', '', full_xml).strip()
     
     return full_xml
 
@@ -142,7 +152,7 @@ def create_output_file_content(processed_xml, original_filename):
     base_filename = os.path.splitext(original_filename)[0]
     sanitized_base_name = re.sub(r' \(\d+\)$', '', base_filename).strip()
     
-    # The output content is the raw processed XML string
+    # The output content is the raw processed XML string. Add a declaration.
     final_output = f'<?xml version="1.0" encoding="UTF-8"?>\n{processed_xml}'
     
     return final_output, f"{sanitized_base_name}_tagged.xml"
