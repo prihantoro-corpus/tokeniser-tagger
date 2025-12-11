@@ -3,39 +3,49 @@ import pandas as pd
 import os
 import zipfile
 import re
+import subprocess
+import sys
 from io import BytesIO
-from fugashi import Tagger # For Japanese
-import nltk # For English Tagging
-# The 'pattern' library contains a fast, pure-Python lemmatizer
-import pattern.en as pattern_en 
 
-# --- NLTK Data Installation (Robust Caching) ---
+# Import components from NLTK
+import nltk
+from nltk.stem import WordNetLemmatizer
+from nltk.corpus import wordnet as wn
+
+# Import components for Japanese
+from fugashi import Tagger 
+
+
+# --- NLTK WordNet Data Installation (The Robust Fix) ---
 @st.cache_resource
 def download_nltk_data():
-    """Downloads necessary NLTK data files to a writable location."""
+    """
+    Downloads required NLTK data packages (tagger, wordnet, punkt) 
+    using the recommended internal method.
+    """
     
-    # Set the NLTK data path to the current working directory (.) 
-    import nltk.data
-    if '.' not in nltk.data.path:
-        nltk.data.path.append('.') 
+    # List of resources required for the NLTK pipeline
+    resources = ['averaged_perceptron_tagger', 'wordnet', 'punkt']
 
-    # Helper function to download if needed
-    def check_and_download(resource_name, package_name):
+    for resource in resources:
         try:
-            nltk.data.find(resource_name)
+            # Check if resource is available
+            nltk.data.find(f'taggers/{resource}') # Using a general check path
         except LookupError:
-            # Download to the current directory
-            nltk.download(package_name, download_dir='.')
-            
-    # We only need the POS tagger data
-    check_and_download('taggers/averaged_perceptron_tagger', 'averaged_perceptron_tagger')
-    check_and_download('tokenizers/punkt', 'punkt') # Punkt data is still useful for NLTK internals
-    
-    st.info("NLTK data (POS Tagger) loaded successfully.")
-    return True
+            # If not found, use the downloader. This usually succeeds in Streamlit Cloud.
+            try:
+                nltk.download(resource, quiet=True)
+            except Exception as e:
+                # If the simple download fails, try the system call (less likely needed, but safer)
+                subprocess.check_call([sys.executable, "-m", "nltk.downloader", resource])
 
-# Call the function once at startup
-NLTK_DATA_READY = download_nltk_data()
+    # Initialize the lemmatizer instance after data is downloaded
+    lemmatizer = WordNetLemmatizer()
+    st.info("NLTK data (POS Tagging & WordNet) loaded successfully.")
+    return lemmatizer
+
+# Global Variables
+WORDNET_LEMMATIZER = download_nltk_data()
 
 
 # --- Global Configuration and State Management ---
@@ -51,8 +61,23 @@ def get_japanese_tokenizer():
         st.error(f"Error initializing Japanese Tokenizer (Fugashi/MeCab). Error: {e}")
         return None
 
-# Global Variables to hold the tagger instances
+# Global Variable
 JAPANESE_TAGGER = get_japanese_tokenizer()
+
+
+# --- Helper Function for Lemmatization ---
+def get_wordnet_pos(tag):
+    """Maps NLTK's Penn Treebank tags to the simplified WordNet format."""
+    if tag.startswith('J'): # Adjective
+        return wn.ADJ
+    elif tag.startswith('V'): # Verb
+        return wn.VERB
+    elif tag.startswith('N'): # Noun
+        return wn.NOUN
+    elif tag.startswith('R'): # Adverb
+        return wn.ADV
+    else:
+        return wn.NOUN # Default to noun for punctuation or unknown
 
 
 # --- Core Processing Functions ---
@@ -73,34 +98,32 @@ def process_text_japanese(text):
             results.append([token, pos, lemma])
     return results if results else None
 
-# --- ENGLISH PROCESSING (NLTK + PATTERN.EN Lemmatization) ---
+# --- ENGLISH PROCESSING (NLTK WordNet Lemmatization) ---
 def process_text_english(text):
-    """Tokenizes, tags (NLTK), and lemmatizes (Pattern.en) English text."""
+    """Tokenizes, tags, and accurately lemmatizes English text using NLTK."""
     
-    if not NLTK_DATA_READY:
-        st.error("NLTK data is not loaded. Cannot tag English.")
+    if WORDNET_LEMMATIZER is None:
+        st.error("English Lemmatizer is not initialized.")
         return None
         
-    # 1. NLTK Sentence and Word Tokenization
-    sentences = nltk.sent_tokenize(text)
+    # 1. Tokenize text
+    tokens = nltk.word_tokenize(text)
+    
+    # 2. POS Tagging (Penn Treebank format)
+    tagged_tokens = nltk.pos_tag(tokens)
+    
     results = []
-
-    for sentence in sentences:
-        words = nltk.word_tokenize(sentence)
+    
+    # 3. Lemmatize using the WordNetLemmatizer instance
+    for token, pos_tag in tagged_tokens:
+        # Get the WordNet POS tag (e.g., 'v', 'a', 'n')
+        wn_tag = get_wordnet_pos(pos_tag)
         
-        # 2. POS Tagging
-        tagged_words = nltk.pos_tag(words)
+        # Perform Lemmatization
+        lemma = WORDNET_LEMMATIZER.lemmatize(token, wn_tag)
         
-        # 3. Lemmatization using Pattern.en for high-speed, pure-Python results
-        for token, pos_tag in tagged_words:
-            # Convert Penn Treebank tag to a simpler tag (used by some lemmatizers)
-            simple_tag = pattern_en.map.treebank2wntags(pos_tag)
-            
-            # Pattern.en lemmatizer call
-            lemma = pattern_en.lemma(token, simple_tag)
-            
-            # Output format: Token [TAB] POS_Tag [TAB] Lemma
-            results.append([token, pos_tag, lemma])
+        # Output format: Token [TAB] POS_Tag [TAB] Lemma
+        results.append([token, pos_tag, lemma])
     
     return results if results else None
 
