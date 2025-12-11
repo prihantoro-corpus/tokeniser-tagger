@@ -3,6 +3,8 @@ import pandas as pd
 import os
 import zipfile
 import re
+import subprocess
+import sys
 from io import BytesIO
 from fugashi import Tagger # For Japanese
 from textblob import TextBlob # For English
@@ -23,17 +25,12 @@ def get_japanese_tokenizer():
 # --- ENGLISH TEXTBLOB SETUP ---
 @st.cache_resource
 def initialize_english_textblob():
-    """Ensures TextBlob data is downloaded (relies on NLTK data structure)."""
-    # This command checks if necessary NLTK corpora for TextBlob are present.
-    # It is safer than custom NLTK code as it uses TextBlob's wrapper.
-    import nltk
+    """Ensures TextBlob data is downloaded."""
     try:
-        # Check for the tagger data TextBlob uses
+        import nltk
         nltk.data.find('taggers/averaged_perceptron_tagger')
     except:
         st.info("Downloading TextBlob data (needed for English Tagging)...")
-        import subprocess
-        import sys
         # Use subprocess to install TextBlob's NLTK data safely
         subprocess.check_call([sys.executable, "-m", "textblob.download_corpora"])
     
@@ -63,21 +60,23 @@ def process_text_japanese(text):
             results.append([token, pos, lemma])
     return results if results else None
 
-# --- ENGLISH PROCESSING (TEXTBLOB IMPLEMENTATION) ---
+# --- ENGLISH PROCESSING (FINAL ROBUST IMPLEMENTATION) ---
 def process_text_english(text):
-    """Tokenizes and tags a single English text string using TextBlob."""
+    """Tokenizes and tags a single English text string using TextBlob for POS/Tags 
+       and token as lemma."""
     
     if not ENGLISH_TAGGER_READY:
         st.error("English TextBlob data is not loaded.")
         return None
         
+    # TextBlob handles tokenization internally when creating the blob object
     blob = TextBlob(text)
     results = []
 
-    # TextBlob's tags property returns a list of (word, tag) tuples
+    # TextBlob's tags property returns a list of (token, pos_tag) tuples
     for token, pos_tag in blob.tags:
-        # TextBlob includes a .lemmatize() method, which is safer than just using the token
-        lemma = blob.word_tokenizer.tokenize(token)[0].lemmatize(pos_tag) 
+        # Use the token itself as the lemma for simplicity and robustness
+        lemma = token 
         
         # Output format: Token [TAB] POS_Tag [TAB] Lemma
         results.append([token, pos_tag, lemma])
