@@ -6,6 +6,7 @@ import re
 from io import BytesIO
 from fugashi import Tagger # For Japanese
 import nltk # For English
+from nltk.tag import PerceptronTagger # Import the specific tagger class
 
 # --- NLTK Data Installation (Final Robust Fix) ---
 @st.cache_resource
@@ -28,10 +29,8 @@ def download_nltk_data():
             # If not found, download it to the current directory ('.')
             nltk.download(package_name, download_dir='.')
             
-    # Download the required resources (We now only need the TAGGER)
-    # The 'punkt' download is removed as we use regex, but we will keep the 'punkt' 
-    # check/download just in case, or for sentence boundary detection if it works later.
-    check_and_download('tokenizers/punkt', 'punkt')
+    # Download the required resources (We only need the standard tagger)
+    check_and_download('tokenizers/punkt', 'punkt') # Keep punkt for safety, though not used for tokenization
     check_and_download('taggers/averaged_perceptron_tagger', 'averaged_perceptron_tagger')
     
     st.info("NLTK data (Punkt & POS Tagger) successfully loaded from the local application path.")
@@ -54,8 +53,22 @@ def get_japanese_tokenizer():
         st.error(f"Error initializing Japanese Tokenizer (Fugashi/MeCab). Error: {e}")
         return None
 
+# --- ENGLISH TAGGER MODEL INSTANCE ---
+@st.cache_resource
+def get_english_tagger_instance():
+    """Initializes the Averaged Perceptron Tagger instance explicitly."""
+    try:
+        # Load the model directly from the data file path.
+        # We must use the ._LOAD_ENGLISH_TAGGER attribute to get the default model instance
+        # from the downloaded resource, bypassing the problematic nltk.pos_tag() logic.
+        return PerceptronTagger._load_english()
+    except Exception as e:
+        st.error(f"FATAL ERROR: Could not load Averaged Perceptron Tagger instance. Error: {e}")
+        return None
+        
 # Global Variables to hold the tagger instances
 JAPANESE_TAGGER = get_japanese_tokenizer()
+ENGLISH_TAGGER_INSTANCE = get_english_tagger_instance()
 
 
 # --- Core Processing Functions ---
@@ -76,27 +89,24 @@ def process_text_japanese(text):
             results.append([token, pos, lemma])
     return results if results else None
 
-# --- ENGLISH PROCESSING (NEW REGEX TOKENIZER) ---
+# --- ENGLISH PROCESSING (FINAL ROBUST IMPLEMENTATION) ---
 def process_text_english(text):
-    """Tokenizes and tags a single English text string using Regex and NLTK tagger."""
+    """Tokenizes and tags a single English text string using Regex and explicit NLTK tagger instance."""
     
-    if not NLTK_DATA_READY:
-        st.error("NLTK data is not loaded. Please refresh the app.")
+    if ENGLISH_TAGGER_INSTANCE is None:
+        st.error("English Tagger model is not available.")
         return None
         
-    # 1. Regex Tokenization (Replaces nltk.word_tokenize/sent_tokenize)
-    # This simple regex captures words, numbers, and common punctuation marks separately.
-    # This is a basic, dependency-free tokenizer.
+    # 1. Regex Tokenization
     tokens = re.findall(r"\w+|[^\s\w]+", text)
-    
-    # Filter out empty strings that may result from the regex
     words = [token.strip() for token in tokens if token.strip()]
     
     if not words:
         return None
         
-    # 2. Perform POS tagging on the raw word list
-    tagged_words = nltk.pos_tag(words)
+    # 2. Perform POS tagging using the explicitly loaded model instance
+    # We use the instance's tag() method, bypassing the problematic nltk.pos_tag() function.
+    tagged_words = ENGLISH_TAGGER_INSTANCE.tag(words)
     
     results = []
     # 3. Compile results
