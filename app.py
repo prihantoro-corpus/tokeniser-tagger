@@ -26,11 +26,11 @@ def download_nltk_data():
             nltk.data.find(resource_name)
         except LookupError:
             # If not found, download it to the current directory ('.')
-            # The directory '.' is the default download location when running from the app root.
-            # We download the package name, not the full resource path
             nltk.download(package_name, download_dir='.')
             
-    # Download the required resources
+    # Download the required resources (We now only need the TAGGER)
+    # The 'punkt' download is removed as we use regex, but we will keep the 'punkt' 
+    # check/download just in case, or for sentence boundary detection if it works later.
     check_and_download('tokenizers/punkt', 'punkt')
     check_and_download('taggers/averaged_perceptron_tagger', 'averaged_perceptron_tagger')
     
@@ -60,7 +60,7 @@ JAPANESE_TAGGER = get_japanese_tokenizer()
 
 # --- Core Processing Functions ---
 
-# --- JAPANESE PROCESSING ---
+# --- JAPANESE PROCESSING (No Change) ---
 def process_text_japanese(text):
     """Tokenizes and tags a single Japanese text string using Fugashi."""
     if JAPANESE_TAGGER is None:
@@ -76,36 +76,40 @@ def process_text_japanese(text):
             results.append([token, pos, lemma])
     return results if results else None
 
-# --- ENGLISH PROCESSING ---
+# --- ENGLISH PROCESSING (NEW REGEX TOKENIZER) ---
 def process_text_english(text):
-    """Tokenizes and tags a single English text string using NLTK."""
+    """Tokenizes and tags a single English text string using Regex and NLTK tagger."""
     
-    # Ensure NLTK data is ready before proceeding
     if not NLTK_DATA_READY:
         st.error("NLTK data is not loaded. Please refresh the app.")
         return None
         
-    # 1. Tokenize the text into sentences
-    sentences = nltk.sent_tokenize(text)
+    # 1. Regex Tokenization (Replaces nltk.word_tokenize/sent_tokenize)
+    # This simple regex captures words, numbers, and common punctuation marks separately.
+    # This is a basic, dependency-free tokenizer.
+    tokens = re.findall(r"\w+|[^\s\w]+", text)
+    
+    # Filter out empty strings that may result from the regex
+    words = [token.strip() for token in tokens if token.strip()]
+    
+    if not words:
+        return None
+        
+    # 2. Perform POS tagging on the raw word list
+    tagged_words = nltk.pos_tag(words)
+    
     results = []
-
-    for sentence in sentences:
-        # 2. Tokenize the sentence into words
-        words = nltk.word_tokenize(sentence)
-        
-        # 3. Perform POS tagging (NLTK's default tagset is Penn Treebank)
-        tagged_words = nltk.pos_tag(words)
-        
-        # 4. Use the token as the lemma (simplified NLTK approach for speed)
-        for token, pos_tag in tagged_words:
-            lemma = token 
-            # Output format: Token [TAB] POS_Tag [TAB] Lemma
-            results.append([token, pos_tag, lemma])
+    # 3. Compile results
+    for token, pos_tag in tagged_words:
+        # Use the token as the lemma (simplified NLTK approach)
+        lemma = token 
+        # Output format: Token [TAB] POS_Tag [TAB] Lemma
+        results.append([token, pos_tag, lemma])
     
     return results if results else None
 
 
-# --- XML Creation and Zipping ---
+# --- XML Creation and Zipping (No Change) ---
 
 def create_xml_content(data_list, original_filename, lang_code):
     """
@@ -157,7 +161,7 @@ def create_zip_archive(output_data, lang_code):
     return zip_buffer.getvalue()
 
 
-# --- Streamlit UI Components ---
+# --- Streamlit UI Components (No Change) ---
 
 def language_selector_page():
     st.sidebar.title("🛠️ Tools")
