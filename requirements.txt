@@ -2,6 +2,4 @@ streamlit
 pandas
 fugashi
 unidic-lite
-spacy
-# Install the necessary English model. Using the direct link ensures it loads reliably.
-https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.7.1/en_core_web_sm-3.7.1.tar.gz
+nltk
