@@ -6,25 +6,31 @@ import re
 from io import BytesIO
 from fugashi import Tagger # For Japanese
 import nltk # For English
-# **FIX:** Explicitly import the submodule needed for the NLTK exception handling
-from nltk.downloader import DownloadError 
-
 
 # --- NLTK Data Installation (Robust Caching) ---
 @st.cache_resource
 def download_nltk_data():
     """Downloads necessary NLTK data files using cached resource."""
+    # We must install the data files using nltk.download()
+    
+    # 1. Punkt (Sentence and Word Tokenizer data)
     try:
-        # Punctuation tokenizer data
         nltk.data.find('tokenizers/punkt')
-    except DownloadError:
-        nltk.download('punkt')
+    except Exception as e:
+        # Catch general exception, then check if it's the specific DownloadError string
+        if 'DownloadError' in str(e):
+            nltk.download('punkt')
+        else:
+            raise e # Re-raise if it's an unexpected error
 
+    # 2. Averaged Perceptron Tagger (POS Tagging data)
     try:
-        # POS tagger data
         nltk.data.find('taggers/averaged_perceptron_tagger')
-    except DownloadError:
-        nltk.download('averaged_perceptron_tagger')
+    except Exception as e:
+        if 'DownloadError' in str(e):
+            nltk.download('averaged_perceptron_tagger')
+        else:
+            raise e # Re-raise if it's an unexpected error
     
     st.info("NLTK data (Punkt & POS Tagger) successfully verified/downloaded.")
     return True
@@ -72,6 +78,11 @@ def process_text_japanese(text):
 def process_text_english(text):
     """Tokenizes and tags a single English text string using NLTK."""
     
+    # Ensure NLTK data is ready before proceeding
+    if not NLTK_DATA_READY:
+        st.error("NLTK data is not loaded. Please refresh the app.")
+        return None
+        
     # 1. Tokenize the text into sentences
     sentences = nltk.sent_tokenize(text)
     results = []
