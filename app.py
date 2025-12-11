@@ -5,7 +5,23 @@ import zipfile
 import re
 from io import BytesIO
 from fugashi import Tagger # For Japanese
-import spacy # For English
+import nltk # For English
+
+# --- NLTK Data Installation ---
+# We use a try/except block to ensure the necessary data files are downloaded once
+# when the application starts, which is much faster than spaCy model downloads.
+try:
+    # Attempt to load the tokenizer data; download if missing
+    nltk.data.find('tokenizers/punkt')
+except nltk.downloader.DownloadError:
+    st.cache_resource(nltk.download)('punkt')
+
+try:
+    # Attempt to load the tagger data; download if missing
+    nltk.data.find('taggers/averaged_perceptron_tagger')
+except nltk.downloader.DownloadError:
+    st.cache_resource(nltk.download)('averaged_perceptron_tagger')
+
 
 # --- Global Configuration and State Management ---
 
@@ -20,32 +36,13 @@ def get_japanese_tokenizer():
         st.error(f"Error initializing Japanese Tokenizer (Fugashi/MeCab). Dependencies missing? Error: {e}")
         return None
 
-# --- ENGLISH TOKENIZER ---
-@st.cache_resource
-def get_english_tokenizer():
-    """Initializes and returns the English spaCy model."""
-    try:
-        # Streamlit deployment assumes 'en_core_web_sm' is available if listed in requirements.txt
-        nlp = spacy.load("en_core_web_sm")
-        return nlp
-    except OSError:
-        # Fallback installation if running locally or in a non-standard environment
-        try:
-            spacy.cli.download("en_core_web_sm")
-            nlp = spacy.load("en_core_web_sm")
-            return nlp
-        except Exception as e:
-            st.error(f"Error initializing English Tokenizer (spaCy). Did you include 'spacy' and 'en_core_web_sm' in requirements.txt? Error: {e}")
-            return None
-
 # Global Variables to hold the tagger instances
 JAPANESE_TAGGER = get_japanese_tokenizer()
-ENGLISH_TAGGER = get_english_tokenizer()
 
 
 # --- Core Processing Functions ---
 
-# --- JAPANESE PROCESSING ---
+# --- JAPANESE PROCESSING (No Change) ---
 def process_text_japanese(text):
     """Tokenizes and tags a single Japanese text string using Fugashi."""
     if JAPANESE_TAGGER is None:
@@ -61,27 +58,35 @@ def process_text_japanese(text):
             results.append([token, pos, lemma])
     return results if results else None
 
-# --- ENGLISH PROCESSING ---
+# --- ENGLISH PROCESSING (NEW NLTK IMPLEMENTATION) ---
 def process_text_english(text):
-    """Tokenizes and tags a single English text string using spaCy."""
-    if ENGLISH_TAGGER is None:
-        return None
+    """Tokenizes and tags a single English text string using NLTK."""
     
-    doc = ENGLISH_TAGGER(text)
+    # 1. Tokenize the text into sentences
+    sentences = nltk.sent_tokenize(text)
     results = []
-    
-    # The output format is: Token [TAB] POS_Tag [TAB] Lemma
-    for token in doc:
-        # Filter out common whitespace/newline tokens that might clutter the output
-        if not token.is_space:
-            # token.tag_ is the detailed POS (like VBD, NNP)
-            # token.lemma_ is the base form
-            results.append([token.text, token.tag_, token.lemma_])
+
+    for sentence in sentences:
+        # 2. Tokenize the sentence into words
+        words = nltk.word_tokenize(sentence)
+        
+        # 3. Perform POS tagging (NLTK's default tagset is Penn Treebank)
+        tagged_words = nltk.pos_tag(words)
+        
+        # 4. NLTK does not have a built-in lemmatizer as fast as spaCy's, 
+        # but we can use the default tagger output for token/POS and use the token as the lemma.
+        # If strict lemmatization is needed, we would add the WordNetLemmatizer, but for speed, we'll simplify.
+        
+        for token, pos_tag in tagged_words:
+            # NLTK uses the token as the default lemma if not explicitly lemmatized
+            lemma = token 
+            # Output format: Token [TAB] POS_Tag [TAB] Lemma
+            results.append([token, pos_tag, lemma])
     
     return results if results else None
 
 
-# --- XML Creation and Zipping ---
+# --- XML Creation and Zipping (No Change) ---
 
 def create_xml_content(data_list, original_filename, lang_code):
     """
@@ -100,7 +105,6 @@ def create_xml_content(data_list, original_filename, lang_code):
     content_block = []
     for token, pos, lemma in data_list:
         # TreeTagger format: token \t POS tag \t lemma
-        # The content should be tab-separated, and placed on a new line after the opening tag
         line = f"{token}\t{pos}\t{lemma}"
         content_block.append(line)
         
@@ -108,7 +112,7 @@ def create_xml_content(data_list, original_filename, lang_code):
     xml_lines.append("\n".join(content_block))
         
     # 3. End the corpus tag
-    xml_lines.append(f'</corpus lang="{lang_code}" id="{sanitized_id}">') # Colab script used closing tag with ID/Lang
+    xml_lines.append(f'</corpus lang="{lang_code}" id="{sanitized_id}">')
     
     return "\n".join(xml_lines)
 
@@ -134,7 +138,7 @@ def create_zip_archive(output_data, lang_code):
     return zip_buffer.getvalue()
 
 
-# --- Streamlit UI Components ---
+# --- Streamlit UI Components (No functional change, just calling the new NLTK logic) ---
 
 def language_selector_page():
     st.sidebar.title("🛠️ Tools")
@@ -188,7 +192,6 @@ def tokenizer_interface(lang_name, lang_code, tagger_func):
                 filename = uploaded_file.name
                 
                 try:
-                    # Read and decode content bytes to UTF-8 text string
                     content_bytes = uploaded_file.read()
                     text = content_bytes.decode('utf-8')
                     
@@ -203,7 +206,6 @@ def tokenizer_interface(lang_name, lang_code, tagger_func):
                 except Exception as e:
                     st.error(f"❌ Failed to process {filename}: {e}")
                 
-                # Update progress bar
                 progress_bar.progress((i + 1) / len(uploaded_files), text=f"Processed {i+1} of {len(uploaded_files)} files...")
             
             progress_bar.empty()
@@ -211,14 +213,12 @@ def tokenizer_interface(lang_name, lang_code, tagger_func):
             # --- Output/Download ---
             if output_data:
                 
-                # 1. Create the ZIP archive bytes
                 with st.spinner('Creating XML and zipping results...'):
                     zip_bytes = create_zip_archive(output_data, lang_code)
                 
                 st.subheader("Download Results")
                 st.success("Processing complete! Download your results below.")
                 
-                # 2. Provide the download button
                 st.download_button(
                     label=f"⬇️ Download {lang_name} Tagged XML (ZIP)",
                     data=zip_bytes,
