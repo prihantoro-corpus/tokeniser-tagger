@@ -1,5 +1,5 @@
 import streamlit as st
-import pd as pd
+import pandas as pd
 import os
 import zipfile
 import re
@@ -85,6 +85,8 @@ def process_xml_content(xml_string, lang_code, tagger_function):
     """
     
     # 1. CRITICAL FIX: Ensure the input XML is wrapped in a single root element
+    # Use a generic name that is unlikely to conflict.
+    # The input could be multiple nodes, so we wrap it all.
     temp_root_tag = 'TEMP_WRAPPER'
     
     # Remove any XML declaration and CDATA to avoid parser errors
@@ -94,22 +96,31 @@ def process_xml_content(xml_string, lang_code, tagger_function):
     
     try:
         # 2. Parse the XML
+        # Use ET.fromstring to handle the string input
         root = ET.fromstring(wrapped_xml)
         
     except ET.ParseError as e:
+        # If standard parsing fails (malformed XML, or raw text), treat as plain text.
         st.warning(f"Input failed XML parsing ({e}). Processing as raw text only.")
         tagged_lines = tagger_function(xml_string)
+        # Wrap raw tagged text in a simple <text> tag for output consistency
         return f'<text lang="{lang_code}">\n' + "\n".join(tagged_lines) + '\n</text>'
         
     # 3. Function to traverse and modify the tree
     def traverse_and_tag(element):
+        
+        # 3a. Process the text content directly inside the current element (.text)
         if element.text and element.text.strip():
+            # Get the tagged output (list of tab-separated strings)
             tagged_lines = tagger_function(element.text)
+            # Replace the original text with the tagged lines, formatted for readability
             element.text = '\n' + '\n'.join(tagged_lines) + '\n'
 
+        # 3b. Recursively process children
         for child in element:
             traverse_and_tag(child)
 
+        # 3c. Process the text content that comes after a child element (.tail)
         if element.tail and element.tail.strip():
             tagged_lines = tagger_function(element.tail)
             element.tail = '\n' + '\n'.join(tagged_lines) + '\n'
@@ -117,8 +128,12 @@ def process_xml_content(xml_string, lang_code, tagger_function):
     # 4. Start traversal and modification
     traverse_and_tag(root)
     
-    # 5. Reconstruct the XML string
+    # 5. Reconstruct the XML string, removing the temporary root tag
+    # Use ET.tostring with encoding='unicode' to get a clean string
     full_xml = ET.tostring(root, encoding='unicode')
+    
+    # Remove the temporary wrapper tag from the beginning and end
+    # We must be careful to remove only the wrapper tag
     full_xml = re.sub(r'^<TEMP_WRAPPER>', '', full_xml)
     full_xml = re.sub(r'</TEMP_WRAPPER>$', '', full_xml).strip()
     
@@ -133,19 +148,28 @@ def process_text(text, lang_code, tagger_function):
 
 def create_output_file_content(processed_xml, original_filename):
     """Creates the final XML output file content."""
+    
     base_filename = os.path.splitext(original_filename)[0]
     sanitized_base_name = re.sub(r' \(\d+\)$', '', base_filename).strip()
+    
+    # The output content is the raw processed XML string. Add a declaration.
     final_output = f'<?xml version="1.0" encoding="UTF-8"?>\n{processed_xml}'
+    
     return final_output, f"{sanitized_base_name}_tagged.xml"
 
 
 def create_zip_archive(output_data):
     """Creates a zip archive in memory and returns the bytes."""
     zip_buffer = BytesIO()
+    
     with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
         for original_name, processed_content in output_data.items():
+            
             final_content, xml_name = create_output_file_content(processed_content, original_name)
+            
+            # Write the XML content to the zip file
             zf.writestr(xml_name, final_content.encode('utf-8'))
+
     zip_buffer.seek(0)
     return zip_buffer.getvalue()
 
@@ -154,13 +178,6 @@ def create_zip_archive(output_data):
 
 def language_selector_page():
     st.sidebar.title("🛠️ Tools")
-    
-    # --- ADDED USER'S MANUAL LINK HERE ---
-    st.sidebar.markdown(
-        "[📖 Users manual](https://docs.google.com/document/d/1i4dz4YE318Qhs5DicQBFxEdGAAbCZgvGcXN2WNHd_3I/edit?usp=sharing)"
-    )
-    st.sidebar.markdown("---")
-    
     st.sidebar.header("Select Language Tokenizer")
     
     language = st.sidebar.radio(
@@ -190,6 +207,7 @@ def language_selector_page():
 
 def tokenizer_interface(lang_name, lang_code, tagger_function):
     """General interface for uploading files and displaying the download button."""
+    
     st.header(f"🌎 {lang_name} Tokenizer and XML Preserver ({lang_code})")
     st.markdown("---")
 
@@ -203,24 +221,31 @@ def tokenizer_interface(lang_name, lang_code, tagger_function):
     
     uploaded_files = st.file_uploader(
         "Choose files",
-        type=['txt', 'xml'], 
+        type=['txt', 'xml'], # Allow XML files as well
         accept_multiple_files=True,
         help="Ensure your text files are encoded in UTF-8."
     )
 
     if uploaded_files:
         if st.button(f"Start Tagging and Preserve XML Structure"):
+            
             output_data = {}
             progress_bar = st.progress(0, text="Processing files...")
             
+            # --- Processing Loop ---
             for i, uploaded_file in enumerate(uploaded_files):
                 filename = uploaded_file.name
+                
                 try:
                     content_bytes = uploaded_file.read()
                     text = content_bytes.decode('utf-8')
+                    
+                    # Core processing function handles XML structure preservation
                     processed_xml = process_text(text, lang_code, tagger_function)
+                    
                     output_data[filename] = processed_xml
                     st.success(f"✅ Processed: **{filename}** (XML structure preserved)")
+                        
                 except Exception as e:
                     st.error(f"❌ Failed to process {filename}: {e}")
                 
@@ -228,16 +253,18 @@ def tokenizer_interface(lang_name, lang_code, tagger_function):
             
             progress_bar.empty()
             
+            # --- Output/Download ---
             if output_data:
+                
                 with st.spinner('Creating XML files and zipping results...'):
                     zip_bytes = create_zip_archive(output_data)
                 
                 st.subheader("Download Results")
                 st.success("Processing complete! Download your results below.")
+                
                 st.download_button(
                     label=f"⬇️ Download Tagged XML Archive",
                     data=zip_bytes,
-                    file_name=f"{lang_code.lower()}_preserved_tagged_xml.zip",
                     file_name=f"{lang_code.lower()}_preserved_tagged_xml.zip",
                     mime="application/zip"
                 )
