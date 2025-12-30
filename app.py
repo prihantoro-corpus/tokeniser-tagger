@@ -12,7 +12,7 @@ import xml.etree.ElementTree as ET
 from fugashi import Tagger as FugashiTagger # for Japanese
 from textblob import TextBlob # for English
 import stanza # for Indonesian
-from nlp_id.lemmatizer import Lemmatizer as IndonesianLemmatizer # for Indonesian Lemmatization
+# Sastrawi import moved to runtime to allow auto-install
 
 # --- Global Configuration and State Management ---
 
@@ -41,6 +41,23 @@ def initialize_english_textblob():
     
     return True
 
+# --- DEPENDENCY AUTO-INSTALLER ---
+def ensure_sastrawi():
+    """Checks if PySastrawi is installed, installs if not, then returns the module."""
+    try:
+        from Sastrawi.Stemmer.StemmerFactory import StemmerFactory
+        return StemmerFactory
+    except ImportError:
+        st.warning("PySastrawi not found. Installing automatically...")
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "PySastrawi"])
+            st.success("PySastrawi installed! Reloading...")
+            from Sastrawi.Stemmer.StemmerFactory import StemmerFactory
+            return StemmerFactory
+        except Exception as e:
+            st.error(f"Failed to install PySastrawi automatically: {e}")
+            return None
+
 # --- INDONESIAN STANZA SETUP ---
 @st.cache_resource
 def get_stanza_pipeline():
@@ -57,12 +74,17 @@ def get_stanza_pipeline():
         # Initialize the pipeline
         nlp = stanza.Pipeline('id', processors='tokenize,pos', use_gpu=False, verbose=False)
         
-        # Initialize nlp-id lemmatizer
-        lemmatizer = IndonesianLemmatizer()
+        # Initialize Sastrawi Stemmer (with auto-install check)
+        StemmerFactory = ensure_sastrawi()
+        if StemmerFactory:
+            factory = StemmerFactory()
+            stemmer = factory.create_stemmer()
+        else:
+            stemmer = None
         
-        return nlp, lemmatizer
+        return nlp, stemmer
     except Exception as e:
-        print(f"Error initializing Indonesian Stanza/NLP-ID Pipeline. Error: {e}")
+        print(f"Error initializing Indonesian Stanza/Sastrawi Pipeline. Error: {e}")
         return None, None
 
 # Global Variables (Lazy loading recommended, but here we init for cache)
@@ -109,7 +131,7 @@ def run_tagger_indonesian(text):
         with st.spinner("Loading Indonesian Model (this may take a minute first time)..."):
             INDONESIAN_RESOURCES = get_stanza_pipeline()
     
-    stanza_pipeline, id_lemmatizer = INDONESIAN_RESOURCES
+    stanza_pipeline, id_stemmer = INDONESIAN_RESOURCES
     
     if stanza_pipeline is None:
         return ["Error: Model failed to load."]
@@ -122,8 +144,8 @@ def run_tagger_indonesian(text):
     for sent in doc.sentences:
         for word in sent.words:
             # Output: token \t POS \t lemma
-            # We use nlp-id for lemmatization
-            lemma = id_lemmatizer.lemmatize(word.text)
+            # We use Sastrawi for lemmatization (stemming)
+            lemma = id_stemmer.stem(word.text)
             results.append(f"{word.text}\t{word.upos}\t{lemma}")
             
     return results
