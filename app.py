@@ -12,6 +12,7 @@ import xml.etree.ElementTree as ET
 from fugashi import Tagger as FugashiTagger # for Japanese
 from textblob import TextBlob # for English
 import stanza # for Indonesian
+from nlp_id.lemmatizer import Lemmatizer as IndonesianLemmatizer # for Indonesian Lemmatization
 
 # --- Global Configuration and State Management ---
 
@@ -54,11 +55,15 @@ def get_stanza_pipeline():
         stanza.download('id', processors='tokenize,pos,lemma', verbose=False)
         
         # Initialize the pipeline
-        nlp = stanza.Pipeline('id', processors='tokenize,pos,lemma', use_gpu=False, verbose=False)
-        return nlp
+        nlp = stanza.Pipeline('id', processors='tokenize,pos', use_gpu=False, verbose=False)
+        
+        # Initialize nlp-id lemmatizer
+        lemmatizer = IndonesianLemmatizer()
+        
+        return nlp, lemmatizer
     except Exception as e:
-        st.error(f"Error initializing Indonesian Stanza Pipeline. Error: {e}")
-        return None
+        print(f"Error initializing Indonesian Stanza/NLP-ID Pipeline. Error: {e}")
+        return None, None
 
 # Global Variables (Lazy loading recommended, but here we init for cache)
 JAPANESE_TAGGER = get_japanese_tokenizer()
@@ -66,7 +71,7 @@ ENGLISH_TAGGER_READY = initialize_english_textblob()
 # We initialize stanza on demand or globally? Globally is okay if cached.
 # However, for startup speed, we might want to do it only if selected.
 # But st.cache_resource handles the singleton pattern nicely.
-INDONESIAN_PIPELINE = None # Will be loaded if needed
+INDONESIAN_RESOURCES = None # Will be loaded if needed
 
 # --- Core Processing Functions ---
 
@@ -99,25 +104,27 @@ def run_tagger_english(text):
 
 # --- INDONESIAN PROCESSING ---
 def run_tagger_indonesian(text):
-    global INDONESIAN_PIPELINE
-    if INDONESIAN_PIPELINE is None:
+    global INDONESIAN_RESOURCES
+    if INDONESIAN_RESOURCES is None:
         with st.spinner("Loading Indonesian Model (this may take a minute first time)..."):
-            INDONESIAN_PIPELINE = get_stanza_pipeline()
+            INDONESIAN_RESOURCES = get_stanza_pipeline()
     
-    if INDONESIAN_PIPELINE is None:
+    stanza_pipeline, id_lemmatizer = INDONESIAN_RESOURCES
+    
+    if stanza_pipeline is None:
         return ["Error: Model failed to load."]
 
     # Stanza processes the text into a Document object
-    doc = INDONESIAN_PIPELINE(text)
+    doc = stanza_pipeline(text)
     
     results = []
     # Stanza structure: doc -> sentences -> words
     for sent in doc.sentences:
         for word in sent.words:
             # Output: token \t POS \t lemma
-            # upos is Universal POS tags (NOUN, VERB, etc.)
-            # xpos is treebank-specific tags (often null for some stanza models, but check)
-            results.append(f"{word.text}\t{word.upos}\t{word.lemma}")
+            # We use nlp-id for lemmatization
+            lemma = id_lemmatizer.lemmatize(word.text)
+            results.append(f"{word.text}\t{word.upos}\t{lemma}")
             
     return results
 
