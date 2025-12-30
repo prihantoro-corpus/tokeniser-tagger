@@ -3,3 +3,4 @@ pandas
 fugashi
 unidic-lite
 textblob
+stanza
