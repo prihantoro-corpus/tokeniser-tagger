@@ -5,4 +5,4 @@ unidic-lite
 textblob
 stanza
 pandas
-nlp-id
+PySastrawi
