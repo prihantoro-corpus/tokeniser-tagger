@@ -230,43 +230,93 @@ def create_zip_archive(output_data):
 def tokenizer_interface(lang_name, lang_code, tagger_function):
     st.header(f"🌎 {lang_name} Tokenizer ({lang_code})")
     st.markdown("---")
-    st.subheader("Upload Text or XML Files")
     
-    uploaded_files = st.file_uploader(
-        "Choose files",
-        type=['txt', 'xml'],
-        accept_multiple_files=True,
-        key=f"uploader_{lang_code}"
-    )
+    # Create Tabs
+    tab_upload, tab_input = st.tabs(["📂 File Upload", "✍️ Direct Input"])
 
-    if uploaded_files:
-        if st.button(f"Start Tagging"):
-            output_data = {}
-            progress_bar = st.progress(0, text="Processing files...")
-            
-            for i, uploaded_file in enumerate(uploaded_files):
-                filename = uploaded_file.name
-                try:
-                    content_bytes = uploaded_file.read()
-                    text = content_bytes.decode('utf-8')
-                    processed_xml = process_text(text, lang_code, tagger_function)
-                    output_data[filename] = processed_xml
-                    st.success(f"✅ Processed: **{filename}**")
-                except Exception as e:
-                    st.error(f"❌ Failed to process {filename}: {e}")
+    # --- TAB 1: FILE UPLOAD ---
+    with tab_upload:
+        st.subheader("Upload Text or XML Files")
+        uploaded_files = st.file_uploader(
+            "Choose files",
+            type=['txt', 'xml'],
+            accept_multiple_files=True,
+            key=f"uploader_{lang_code}"
+        )
+
+        if uploaded_files:
+            if st.button(f"Start Tagging", key=f"btn_upload_{lang_code}"):
+                output_data = {}
+                progress_bar = st.progress(0, text="Processing files...")
                 
-                progress_bar.progress((i + 1) / len(uploaded_files), text=f"Processed {i+1} of {len(uploaded_files)}")
-            
-            progress_bar.empty()
-            
-            if output_data:
-                zip_bytes = create_zip_archive(output_data)
-                st.download_button(
-                    label=f"⬇️ Download Results",
-                    data=zip_bytes,
-                    file_name=f"{lang_code.lower()}_tagged.zip",
-                    mime="application/zip"
-                )
+                for i, uploaded_file in enumerate(uploaded_files):
+                    filename = uploaded_file.name
+                    try:
+                        content_bytes = uploaded_file.read()
+                        text = content_bytes.decode('utf-8')
+                        processed_xml = process_text(text, lang_code, tagger_function)
+                        output_data[filename] = processed_xml
+                        st.success(f"✅ Processed: **{filename}**")
+                    except Exception as e:
+                        st.error(f"❌ Failed to process {filename}: {e}")
+                    
+                    progress_bar.progress((i + 1) / len(uploaded_files), text=f"Processed {i+1} of {len(uploaded_files)}")
+                
+                progress_bar.empty()
+                
+                if output_data:
+                    zip_bytes = create_zip_archive(output_data)
+                    st.download_button(
+                        label=f"⬇️ Download Results",
+                        data=zip_bytes,
+                        file_name=f"{lang_code.lower()}_tagged.zip",
+                        mime="application/zip",
+                        key=f"dl_upload_{lang_code}"
+                    )
+    
+    # --- TAB 2: DIRECT INPUT ---
+    with tab_input:
+        st.subheader("Type or Paste Text")
+        user_input = st.text_area("Enter text here:", height=200, key=f"text_input_{lang_code}")
+        
+        if st.button("Tag Text", key=f"btn_input_{lang_code}"):
+            if user_input.strip():
+                with st.spinner("Processing..."):
+                    # Process and get list of strings
+                    try:
+                        tagged_lines = tagger_function(user_input)
+                        
+                        # PREVIEW: Create DataFrame
+                        data = []
+                        for line in tagged_lines:
+                            parts = line.split('\t')
+                            if len(parts) == 3:
+                                data.append({"Token": parts[0], "POS": parts[1], "Lemma": parts[2]})
+                        
+                        if data:
+                            st.write("### Result Preview")
+                            df = pd.DataFrame(data)
+                            st.dataframe(df, use_container_width=True)
+                            
+                            # DOWNLOAD: Create XML
+                            # Wrap wrapped lines into XML structure
+                            full_xml = f'<text lang="{lang_code}">\n' + "\n".join(tagged_lines) + '\n</text>'
+                            final_output = f'<?xml version="1.0" encoding="UTF-8"?>\n{full_xml}'
+                            
+                            st.download_button(
+                                label="⬇️ Download XML",
+                                data=final_output,
+                                file_name=f"{lang_code.lower()}_input_tagged.xml",
+                                mime="text/xml",
+                                key=f"dl_input_{lang_code}"
+                            )
+                        else:
+                            st.warning("No tokens found.")
+                            
+                    except Exception as e:
+                        st.error(f"Error processing text: {e}")
+            else:
+                st.warning("Please enter some text.")
 
 def main():
     st.set_page_config(page_title="Multilingual Tagger", layout="wide")
