@@ -158,12 +158,54 @@ def run_tagger_indonesian(text):
     # Stanza structure: doc -> sentences -> words
     for sent in doc.sentences:
         for word in sent.words:
-            # Output: token \t POS \t lemma
-            # Use dictionary for lookup (case-insensitive)
             token_text = word.text
-            lemma = lemma_dict.get(token_text.lower(), token_text)
+            token_lower = token_text.lower()
+            original_pos = word.upos
             
-            results.append(f"{token_text}\t{word.upos}\t{lemma}")
+            # Logic: 
+            # 1. Check if full token is in dict override (Case Insensitive)
+            if token_lower in lemma_dict:
+                lemma = lemma_dict[token_lower]
+                results.append(f"{token_text}\t{original_pos}\t{lemma}")
+                continue
+            
+            # 2. Check Clitics
+            split_found = False
+            
+            # 2a. Prefix "ku-"
+            if token_lower.startswith("ku"):
+                stem = token_lower[2:]
+                if stem in lemma_dict:
+                    # Found 'ku-' prefix
+                    # Output 'ku'
+                    results.append(f"ku\tPRON\taku")
+                    # Output stem
+                    stem_lemma = lemma_dict[stem]
+                    results.append(f"{stem}\t{original_pos}\t{stem_lemma}")
+                    split_found = True
+            
+            # 2b. Suffixes "-ku", "-mu", "-nya" (only if not already split by prefix rule)
+            if not split_found:
+                suffixes = [("ku", "aku"), ("mu", "kamu"), ("nya", "dia")]
+                for suffix, suffix_lemma in suffixes:
+                    if token_lower.endswith(suffix):
+                        stem = token_lower[:-len(suffix)]
+                        # Check if stem is valid
+                        if stem in lemma_dict:
+                            # Found suffix
+                            # Output stem
+                            stem_lemma = lemma_dict[stem]
+                            results.append(f"{stem}\t{original_pos}\t{stem_lemma}")
+                            # Output suffix
+                            results.append(f"{suffix}\tPRON\t{suffix_lemma}")
+                            split_found = True
+                            break
+            
+            # 3. Fallback: No split logic applied
+            if not split_found:
+                 # Check again if exact case exists (unlikely if lower failed, but safe) or just use token
+                 lemma = lemma_dict.get(token_lower, token_text)
+                 results.append(f"{token_text}\t{original_pos}\t{lemma}")
             
     return results
 
