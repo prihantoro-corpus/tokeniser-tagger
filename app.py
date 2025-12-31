@@ -196,8 +196,19 @@ def run_tagger_indonesian(text):
                             # Output stem
                             stem_lemma = lemma_dict[stem]
                             results.append(f"{stem}\t{original_pos}\t{stem_lemma}")
-                            # Output suffix
-                            results.append(f"{suffix}\tPRON\t{suffix_lemma}")
+                            
+                            # Output suffix with Disambiguation Logic
+                            if suffix == "nya":
+                                # If original POS (proxy for stem POS) is VERB -> PRON
+                                # Else -> PRON|DET (Ambiguous)
+                                if original_pos == "VERB":
+                                    suffix_pos = "PRON"
+                                else:
+                                    suffix_pos = "PRON|DET"
+                            else:
+                                suffix_pos = "PRON"
+                                
+                            results.append(f"{suffix}\t{suffix_pos}\t{suffix_lemma}")
                             split_found = True
                             break
             
@@ -381,7 +392,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-
