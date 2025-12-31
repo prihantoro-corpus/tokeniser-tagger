@@ -41,22 +41,44 @@ def initialize_english_textblob():
     
     return True
 
+import requests
+
 # --- DEPENDENCY AUTO-INSTALLER ---
-def ensure_sastrawi():
-    """Checks if PySastrawi is installed, installs if not, then returns the module."""
+# PySastrawi removed as per user request to use wordlist instead.
+
+# --- INDONESIAN WORDLIST SETUP ---
+@st.cache_resource
+def get_indonesian_dictionary():
+    """
+    Downloads and parses the Indonesian token-tag-lemma dictionary.
+    Returns a dictionary mapping token -> lemma.
+    """
+    url = "https://raw.githubusercontent.com/prihantoro-corpus/tokeniser-tagger/main/ID-token-tag-lemma.txt"
     try:
-        from Sastrawi.Stemmer.StemmerFactory import StemmerFactory
-        return StemmerFactory
-    except ImportError:
-        st.warning("PySastrawi not found. Installing automatically...")
-        try:
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "PySastrawi"])
-            st.success("PySastrawi installed! Reloading...")
-            from Sastrawi.Stemmer.StemmerFactory import StemmerFactory
-            return StemmerFactory
-        except Exception as e:
-            st.error(f"Failed to install PySastrawi automatically: {e}")
-            return None
+        response = requests.get(url)
+        response.raise_for_status()
+        
+        lemma_dict = {}
+        # Expected format: token tag lemma
+        # We will map token (lower) -> lemma
+        # If duplicates exist, later entries will overwrite earlier ones (simple approach)
+        
+        lines = response.text.strip().split('\n')
+        for line in lines:
+            parts = line.strip().split()
+            if len(parts) >= 3:
+                # Assuming first column is token, last is lemma. 
+                # Tag (middle) is ignored for now as we use Stanza tags.
+                token = parts[0]
+                lemma = parts[-1]
+                
+                # key by lowercase token for robustness
+                lemma_dict[token.lower()] = lemma
+                
+        return lemma_dict
+    except Exception as e:
+        st.error(f"Failed to load Indonesian dictionary: {e}")
+        return {}
 
 # --- INDONESIAN STANZA SETUP ---
 @st.cache_resource
@@ -67,25 +89,16 @@ def get_stanza_pipeline():
     """
     try:
         # Download stanza model if not exists. 
-        # 'processors': 'tokenize,pos,lemma' keeps it lighter than full parsing.
-        # 'verbose': False keeps logs clean.
-        stanza.download('id', processors='tokenize,pos,lemma', verbose=False)
+        # 'processors': 'tokenize,pos' - lemma processor removed as we use dictionary
+        stanza.download('id', processors='tokenize,pos', verbose=False)
         
         # Initialize the pipeline
         nlp = stanza.Pipeline('id', processors='tokenize,pos', use_gpu=False, verbose=False)
         
-        # Initialize Sastrawi Stemmer (with auto-install check)
-        StemmerFactory = ensure_sastrawi()
-        if StemmerFactory:
-            factory = StemmerFactory()
-            stemmer = factory.create_stemmer()
-        else:
-            stemmer = None
-        
-        return nlp, stemmer
+        return nlp
     except Exception as e:
-        print(f"Error initializing Indonesian Stanza/Sastrawi Pipeline. Error: {e}")
-        return None, None
+        print(f"Error initializing Indonesian Stanza Pipeline. Error: {e}")
+        return None
 
 # Global Variables (Lazy loading recommended, but here we init for cache)
 JAPANESE_TAGGER = get_japanese_tokenizer()
@@ -128,10 +141,12 @@ def run_tagger_english(text):
 def run_tagger_indonesian(text):
     global INDONESIAN_RESOURCES
     if INDONESIAN_RESOURCES is None:
-        with st.spinner("Loading Indonesian Model (this may take a minute first time)..."):
-            INDONESIAN_RESOURCES = get_stanza_pipeline()
+        with st.spinner("Loading Indonesian Model & Dictionary..."):
+            stanza_pipeline = get_stanza_pipeline()
+            lemma_dict = get_indonesian_dictionary()
+            INDONESIAN_RESOURCES = (stanza_pipeline, lemma_dict)
     
-    stanza_pipeline, id_stemmer = INDONESIAN_RESOURCES
+    stanza_pipeline, lemma_dict = INDONESIAN_RESOURCES
     
     if stanza_pipeline is None:
         return ["Error: Model failed to load."]
@@ -144,9 +159,11 @@ def run_tagger_indonesian(text):
     for sent in doc.sentences:
         for word in sent.words:
             # Output: token \t POS \t lemma
-            # We use Sastrawi for lemmatization (stemming)
-            lemma = id_stemmer.stem(word.text)
-            results.append(f"{word.text}\t{word.upos}\t{lemma}")
+            # Use dictionary for lookup (case-insensitive)
+            token_text = word.text
+            lemma = lemma_dict.get(token_text.lower(), token_text)
+            
+            results.append(f"{token_text}\t{word.upos}\t{lemma}")
             
     return results
 
