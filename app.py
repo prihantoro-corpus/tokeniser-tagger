@@ -231,11 +231,12 @@ def tokenizer_interface(lang_name, lang_code, tagger_function):
     st.header(f"🌎 {lang_name} Tokenizer ({lang_code})")
     st.markdown("---")
     
-    # Create Tabs
-    tab_upload, tab_input = st.tabs(["📂 File Upload", "✍️ Direct Input"])
+    # Input Method Selection
+    input_method = st.radio("Choose Input Method:", ["📂 File Upload", "✍️ Direct Input"], horizontal=True)
+    st.markdown("---")
 
-    # --- TAB 1: FILE UPLOAD ---
-    with tab_upload:
+    # --- MODE 1: FILE UPLOAD ---
+    if input_method == "📂 File Upload":
         st.subheader("Upload Text or XML Files")
         uploaded_files = st.file_uploader(
             "Choose files",
@@ -274,8 +275,8 @@ def tokenizer_interface(lang_name, lang_code, tagger_function):
                         key=f"dl_upload_{lang_code}"
                     )
     
-    # --- TAB 2: DIRECT INPUT ---
-    with tab_input:
+    # --- MODE 2: DIRECT INPUT ---
+    elif input_method == "✍️ Direct Input":
         st.subheader("Type or Paste Text")
         user_input = st.text_area("Enter text here:", height=200, key=f"text_input_{lang_code}")
         
