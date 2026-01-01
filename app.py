@@ -73,7 +73,8 @@ def get_indonesian_dictionary():
                 lemma = parts[-1]
                 
                 # key by lowercase token for robustness
-                lemma_dict[token.lower()] = lemma
+                # strip() again to be safe from invisible whitespace characters
+                lemma_dict[token.lower().strip()] = lemma.strip()
                 
         return lemma_dict
     except Exception as e:
@@ -157,13 +158,23 @@ def run_tagger_indonesian(text):
     results = []
     # Stanza structure: doc -> sentences -> words
     for sent in doc.sentences:
-        for word in sent.words:
             token_text = word.text
             token_lower = token_text.lower()
             original_pos = word.upos
-            
+
             # 1. Check Clitics
             split_found = False
+            
+            # SIDEBAR DEBUG (Optional, can be removed after debugging)
+            if "se" in token_lower:
+                st.sidebar.write(f"**DEBUG (ID):** Checking '{token_lower}'")
+                st.sidebar.write(f"- Stem: '{token_lower[2:]}'")
+                st.sidebar.write(f"- Stem in Dict? {token_lower[2:] in lemma_dict}")
+                st.sidebar.write(f"- Dict Size: {len(lemma_dict)}")
+                if "batang" in lemma_dict:
+                    st.sidebar.write(f"- 'batang' Lemma found!")
+                else:
+                    st.sidebar.write(f"- 'batang' NOT FOUND in dict")
             
             # 1a. Prefix "ku-" and "se-"
             if token_lower.startswith("ku"):
