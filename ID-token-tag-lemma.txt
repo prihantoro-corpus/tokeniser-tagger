@@ -1,3 +1,4 @@
+ambilkan VB ambil
 se- CD satu
 batang NN batang
 se cd satu
@@ -61678,4 +61679,5 @@ zuriah	NN	zuriah
 zuriat	NN	zuriat
 
 zus	NN	zus
+
 
