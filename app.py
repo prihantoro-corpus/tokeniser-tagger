@@ -172,13 +172,24 @@ def run_tagger_indonesian(text):
             # 2. Check Clitics
             split_found = False
             
-            # 2a. Prefix "ku-"
+            # 2a. Prefix "ku-" and "se-"
             if token_lower.startswith("ku"):
                 stem = token_lower[2:]
                 if stem in lemma_dict:
                     # Found 'ku-' prefix
                     # Output 'ku'
                     results.append(f"ku\tPRON\taku")
+                    # Output stem
+                    stem_lemma = lemma_dict[stem]
+                    results.append(f"{stem}\t{original_pos}\t{stem_lemma}")
+                    split_found = True
+            
+            if not split_found and token_lower.startswith("se"):
+                stem = token_lower[2:]
+                if stem in lemma_dict:
+                    # Found 'se-' prefix
+                    # Output 'se'
+                    results.append(f"se\tDET\tsatu")
                     # Output stem
                     stem_lemma = lemma_dict[stem]
                     results.append(f"{stem}\t{original_pos}\t{stem_lemma}")
