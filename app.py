@@ -157,46 +157,65 @@ def run_tagger_indonesian(text):
             
             split_found = False
             
-            # 1. Clitic Splitting (Takes Precedence)
+            # --- LAYER 1: Standalone Clitics (Handling Stanza's pre-splitting) ---
+            # These tokens are often split by Stanza but not tagged against our clitic rules.
+            standalone_clitics = {
+                "se": ("DET", "satu"),
+                "ku": ("PRON", "aku"),
+                "mu": ("PRON", "kamu"),
+                "nya": ("PRON", "dia") # Default to PRON, or disambiguate later if needed
+            }
             
-            # 1a. Prefix Clitics (ku-, se-)
-            # ku- (length 2)
-            if token_lower.startswith("ku") and len(token_lower) > 2:
-                stem = token_lower[2:]
-                if stem in lemma_dict:
-                    results.append(f"ku\tPRON\taku")
-                    results.append(f"{stem}\t{original_pos}\t{lemma_dict[stem]}")
-                    split_found = True
-                    debug_info.append(f"Split 'ku-': {token_lower} -> ku + {stem}")
+            if token_lower in standalone_clitics:
+                tag, lemma = standalone_clitics[token_lower]
+                # Special disambiguation for 'nya' if it's standalone (rare but possible)
+                if token_lower == "nya" and original_pos != "VERB":
+                    tag = "PRON|DET"
+                
+                results.append(f"{token_text}\t{tag}\t{lemma}")
+                split_found = True
+                debug_info.append(f"Layer 1 Match: {token_lower} -> {lemma}")
             
-            # se- (length 2)
-            if not split_found and token_lower.startswith("se") and len(token_lower) > 2:
-                stem = token_lower[2:]
-                if stem in lemma_dict:
-                    results.append(f"se\tDET\tsatu")
-                    results.append(f"{stem}\t{original_pos}\t{lemma_dict[stem]}")
-                    split_found = True
-                    debug_info.append(f"Split 'se-': {token_lower} -> se + {stem}")
-            
-            # 1b. Suffix Clitics (-ku, -mu, -nya)
+            # --- LAYER 2: Merged Clitics (Prefix/Suffix) ---
             if not split_found:
-                suffixes = [("ku", "aku"), ("mu", "kamu"), ("nya", "dia")]
-                for suffix, suffix_lemma in suffixes:
-                    if token_lower.endswith(suffix) and len(token_lower) > len(suffix):
-                        stem = token_lower[:-len(suffix)]
-                        if stem in lemma_dict:
-                            results.append(f"{stem}\t{original_pos}\t{lemma_dict[stem]}")
-                            # Disambiguation for -nya
-                            if suffix == "nya":
-                                suffix_pos = "PRON" if original_pos == "VERB" else "PRON|DET"
-                            else:
-                                suffix_pos = "PRON"
-                            results.append(f"{suffix}\t{suffix_pos}\t{suffix_lemma}")
-                            split_found = True
-                            debug_info.append(f"Split Suffix: {token_lower} -> {stem} + {suffix}")
-                            break
+                # 2a. Prefix Clitics (ku-, se-)
+                # ku-
+                if token_lower.startswith("ku") and len(token_lower) > 2:
+                    stem = token_lower[2:]
+                    if stem in lemma_dict:
+                        results.append(f"ku\tPRON\taku")
+                        results.append(f"{stem}\t{original_pos}\t{lemma_dict[stem]}")
+                        split_found = True
+                        debug_info.append(f"Layer 2 Split 'ku-': {token_lower} -> ku + {stem}")
+                
+                # se-
+                if not split_found and token_lower.startswith("se") and len(token_lower) > 2:
+                    stem = token_lower[2:]
+                    if stem in lemma_dict:
+                        results.append(f"se\tDET\tsatu")
+                        results.append(f"{stem}\t{original_pos}\t{lemma_dict[stem]}")
+                        split_found = True
+                        debug_info.append(f"Layer 2 Split 'se-': {token_lower} -> se + {stem}")
+                
+                # 2b. Suffix Clitics (-ku, -mu, -nya)
+                if not split_found:
+                    suffixes = [("ku", "aku"), ("mu", "kamu"), ("nya", "dia")]
+                    for suffix, suffix_lemma in suffixes:
+                        if token_lower.endswith(suffix) and len(token_lower) > len(suffix):
+                            stem = token_lower[:-len(suffix)]
+                            if stem in lemma_dict:
+                                results.append(f"{stem}\t{original_pos}\t{lemma_dict[stem]}")
+                                # Disambiguation for -nya
+                                if suffix == "nya":
+                                    suffix_pos = "PRON" if original_pos == "VERB" else "PRON|DET"
+                                else:
+                                    suffix_pos = "PRON"
+                                results.append(f"{suffix}\t{suffix_pos}\t{suffix_lemma}")
+                                split_found = True
+                                debug_info.append(f"Layer 2 Split Suffix: {token_lower} -> {stem} + {suffix}")
+                                break
             
-            # 2. Dictionary Match (If no clitic split)
+            # --- LAYER 3: Dictionary Match & Fallback ---
             if not split_found:
                 lemma = lemma_dict.get(token_lower, token_text)
                 results.append(f"{token_text}\t{original_pos}\t{lemma}")
