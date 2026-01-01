@@ -1,36 +1,44 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -e
 
-# --- Path Configuration ---
-# These point to the relative locations in your GitHub repo
-BIN_DIR="./treetagger/bin"
-CMD_DIR="./treetagger/cmd"
-LIB_DIR="./treetagger/lib"
+# ===============================
+# Resolve script directory safely
+# ===============================
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+BIN_DIR="$ROOT_DIR/bin"
+CMD_DIR="$ROOT_DIR/cmd"
+LIB_DIR="$ROOT_DIR/lib"
+
+# ===============================
+# Argument parsing
+# ===============================
 USE_MWU=0
-ARGS=""
+PASSTHRU_ARGS=()
 
-# --- Argument Parsing ---
-# Detects if the -mwu flag was passed from Streamlit
 for arg in "$@"; do
-    if [ "$arg" = "-mwu" ]; then
+    if [[ "$arg" == "-mwu" ]]; then
         USE_MWU=1
     else
-        ARGS="$ARGS $arg"
+        PASSTHRU_ARGS+=("$arg")
     fi
 done
 
-# --- The Execution Pipeline ---
-if [ "$USE_MWU" -eq 1 ]; then
-    # Full Pipeline: Tokenize -> Split Clitics -> MWU Lookup -> Tag -> Fix Lemmas
-    "$CMD_DIR/utf8-tokenize.perl" -a "$LIB_DIR/indonesian-abbreviations" $ARGS | \
-    perl "$CMD_DIR/split-clitics.perl" | \
-    perl "$CMD_DIR/mwl-lookup.perl" -f "$LIB_DIR/indonesian-mwls.txt" | \
-    "$BIN_DIR/tree-tagger" "$LIB_DIR/indonesian.par" -token -lemma | \
-    perl "$CMD_DIR/morph-fixer.perl"
+# ===============================
+# Pipelines
+# ===============================
+if [[ "$USE_MWU" -eq 1 ]]; then
+    # Tokenize → Split clitics → MWU → Tag → Morph fix
+    "$CMD_DIR/utf8-tokenize.perl" -a "$LIB_DIR/indonesian-abbreviations" "${PASSTHRU_ARGS[@]}" \
+    | perl "$CMD_DIR/split-clitics.perl" \
+    | perl "$CMD_DIR/mwl-lookup.perl" -f "$LIB_DIR/indonesian-mwls.txt" \
+    | "$BIN_DIR/tree-tagger" "$LIB_DIR/indonesian.par" -token -lemma \
+    | perl "$CMD_DIR/morph-fixer.perl"
 else
-    # Standard Pipeline: Tokenize -> Split Clitics -> Tag -> Fix Lemmas
-    "$CMD_DIR/utf8-tokenize.perl" -a "$LIB_DIR/indonesian-abbreviations" $ARGS | \
-    perl "$CMD_DIR/split-clitics.perl" | \
-    "$BIN_DIR/tree-tagger" "$LIB_DIR/indonesian.par" -token -lemma | \
-    perl "$CMD_DIR/morph-fixer.perl"
+    # Tokenize → Split clitics → Tag → Morph fix
+    "$CMD_DIR/utf8-tokenize.perl" -a "$LIB_DIR/indonesian-abbreviations" "${PASSTHRU_ARGS[@]}" \
+    | perl "$CMD_DIR/split-clitics.perl" \
+    | "$BIN_DIR/tree-tagger" "$LIB_DIR/indonesian.par" -token -lemma \
+    | perl "$CMD_DIR/morph-fixer.perl"
 fi
