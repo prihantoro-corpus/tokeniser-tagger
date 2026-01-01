@@ -158,6 +158,7 @@ def run_tagger_indonesian(text):
     results = []
     # Stanza structure: doc -> sentences -> words
     for sent in doc.sentences:
+        for word in sent.words:
             token_text = word.text
             token_lower = token_text.lower()
             original_pos = word.upos
