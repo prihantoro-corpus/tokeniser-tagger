@@ -38,56 +38,125 @@ def run_tagger_english(text):
         results.append(f"{token}\t{pos_tag}\t{lemma}")
     return results
 
-# --- INDONESIAN TREETAGGER (DOCKER) ---
+import requests
+import stanza
+
+# --- INDONESIAN WORDLIST SETUP ---
+@st.cache_resource
+def get_indonesian_dictionary():
+    """Mapping from Indonesian token (lower) -> lemma."""
+    url = "https://raw.githubusercontent.com/prihantoro-corpus/tokeniser-tagger/main/ID-token-tag-lemma.txt"
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        lemma_dict = {}
+        for line in response.text.strip().split('\n'):
+            parts = line.strip().split()
+            if len(parts) >= 3:
+                lemma_dict[parts[0].lower()] = parts[-1]
+        return lemma_dict
+    except:
+        return {}
+
+# --- INDONESIAN STANZA SETUP ---
+@st.cache_resource
+def get_stanza_pipeline():
+    """Initializes Stanza for Indonesian."""
+    try:
+        stanza.download('id', processors='tokenize,pos', verbose=False)
+        return stanza.Pipeline('id', processors='tokenize,pos', use_gpu=False, verbose=False)
+    except:
+        return None
+
+INDONESIAN_RESOURCES = None
+
+def run_stanza_indonesian(text):
+    """Fallback function: Stanza + Wordlist processing."""
+    global INDONESIAN_RESOURCES
+    if INDONESIAN_RESOURCES is None:
+        INDONESIAN_RESOURCES = (get_stanza_pipeline(), get_indonesian_dictionary())
+    
+    pipeline, lemma_dict = INDONESIAN_RESOURCES
+    if pipeline is None:
+        return ["Error\tERROR\tModel failed to load."]
+        
+    doc = pipeline(text)
+    results = []
+    for sent in doc.sentences:
+        for word in sent.words:
+            t, lower, pos = word.text, word.text.lower(), word.upos
+            
+            # Dictionary override
+            if lower in lemma_dict:
+                results.append(f"{t}\t{pos}\t{lemma_dict[lower]}")
+                continue
+            
+            # Simple Clitic logic
+            split_found = False
+            # Prefix ku-
+            if lower.startswith("ku") and lower[2:] in lemma_dict:
+                results.append(f"ku\tPRON\taku")
+                results.append(f"{t[2:]}\t{pos}\t{lemma_dict[lower[2:]]}")
+                split_found = True
+            # Suffixes
+            elif not split_found:
+                for suf, l in [("nya", "dia"), ("mu", "kamu"), ("ku", "aku")]:
+                    if lower.endswith(suf) and lower[:-len(suf)] in lemma_dict:
+                        results.append(f"{t[:-len(suf)]}\t{pos}\t{lemma_dict[lower[:-len(suf)]]}")
+                        # Suffix disambiguation
+                        s_pos = "PRON" if pos == "VERB" or suf != "nya" else "PRON|DET"
+                        results.append(f"{suf}\t{s_pos}\t{l}")
+                        split_found = True
+                        break
+            
+            if not split_found:
+                results.append(f"{t}\t{pos}\t{lemma_dict.get(lower, t)}")
+    return results
+
+# --- INDONESIAN TREETAGGER (NATIVE LINUX) ---
 def run_tagger_indonesian(text, use_mwu=False):
     """
-    Runs TreeTagger for Indonesian using a Docker container.
-    Command: docker run -i treetagger-indo [-mwu]
+    Runs TreeTagger natively on Linux.
+    Automatically installs TreeTagger if not found.
     """
-    if not text.strip():
-        return []
+    if not text.strip(): return []
+
+    tt_bin = "./treetagger/bin/tree-tagger"
+    tt_cmd = "./treetagger/cmd/tag-indonesian"
     
-    cmd = ["docker", "run", "-i", "--rm", "treetagger-indo"]
-    if use_mwu:
-        cmd.append("-mwu")
-    
-    try:
-        # We use utf-8 for stdin/stdout communication with the container
-        process = subprocess.Popen(
-            cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding='utf-8'
-        )
+    # 1. Check/Install TreeTagger if on Linux
+    if sys.platform.startswith("linux"):
+        if not os.path.exists(tt_bin):
+            with st.spinner("Setting up TreeTagger for Linux..."):
+                try:
+                    subprocess.run(["sh", "install_treetagger.sh"], check=True, capture_output=True)
+                    st.success("TreeTagger installed successfully!")
+                except Exception as e:
+                    st.error(f"Failed to install TreeTagger: {e}")
+                    return run_stanza_indonesian(text) # Final fallback
+
+    # 2. Run Native Command
+    if os.path.exists(tt_cmd):
+        cmd = ["bash", tt_cmd]
+        if use_mwu: cmd.append("-mwu")
         
-        stdout, stderr = process.communicate(input=text)
-        
-        if process.returncode != 0:
-            st.error(f"TreeTagger Error: {stderr}")
-            return [f"Error\tERROR\t{stderr.strip()}"]
+        try:
+            process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8')
+            stdout, stderr = process.communicate(input=text)
             
-        results = []
-        # TreeTagger output is tab-separated: token \t POS \t lemma
-        for line in stdout.strip().split('\n'):
-            if line.strip():
-                parts = line.split('\t')
-                if len(parts) >= 3:
-                    # TreeTagger output format matches our expected results list
-                    results.append(line.strip())
-                elif len(parts) == 2:
-                    # Fallback for unexpected format
-                    results.append(f"{parts[0]}\t{parts[1]}\t{parts[0]}")
-                    
-        return results
-        
-    except FileNotFoundError:
-        st.error("Docker not found. Please ensure Docker is installed and in your PATH.")
-        return ["Error\tERROR\tDocker not found"]
-    except Exception as e:
-        st.error(f"Unexpected error calling TreeTagger: {e}")
-        return [f"Error\tERROR\t{str(e)}"]
+            if process.returncode != 0:
+                st.error(f"TreeTagger Error: {stderr}")
+                return [f"Error\tERROR\t{stderr.strip()}"]
+                
+            return [l for l in stdout.strip().split('\n') if l.strip()]
+        except Exception as e:
+            st.error(f"Execution Error: {e}")
+            return run_stanza_indonesian(text)
+    else:
+        # Fallback for Windows or missing installation
+        if not sys.platform.startswith("linux"):
+            st.info("💡 Native TreeTagger is only available on Linux. Using Lightweight mode.")
+        return run_stanza_indonesian(text)
 
 
 def process_xml_content(xml_string, lang_code, tagger_function):
