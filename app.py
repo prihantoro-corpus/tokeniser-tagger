@@ -83,7 +83,7 @@ def run_tagger_indonesian(text, use_mwu=False):
     if not os.path.exists(TT_PAR):
         return ["ERROR\tERROR\tParameter file not found"]
 
-    cmd = ["bash", TT_CMD]
+    cmd = ["bash", tt_cmd, "-token", "-lemma"]
     if use_mwu:
         cmd.append("-mwu")
 
