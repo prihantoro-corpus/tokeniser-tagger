@@ -6,3 +6,5 @@ textblob
 stanza
 pandas
 PySastrawi
+perl
+wget
