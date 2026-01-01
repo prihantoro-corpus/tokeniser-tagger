@@ -11,105 +11,6 @@ import xml.etree.ElementTree as ET
 # Import language libraries
 from fugashi import Tagger as FugashiTagger # for Japanese
 from textblob import TextBlob # for English
-import stanza # for Indonesian
-# Sastrawi import moved to runtime to allow auto-install
-
-# --- Global Configuration and State Management ---
-
-# --- JAPANESE TOKENIZER ---
-@st.cache_resource
-def get_japanese_tokenizer():
-    """Initializes and returns the Fugashi Tagger with unidic-lite."""
-    try:
-        tagger = FugashiTagger()
-        return tagger
-    except Exception as e:
-        # Warning instead of error to allow app to run if just one lang fails
-        print(f"Error initializing Japanese Tokenizer: {e}") 
-        return None
-
-# --- ENGLISH TEXTBLOB SETUP ---
-@st.cache_resource
-def initialize_english_textblob():
-    """Ensures TextBlob data is downloaded."""
-    try:
-        import nltk
-        nltk.data.find('taggers/averaged_perceptron_tagger')
-    except LookupError:
-        print("Downloading TextBlob data...")
-        subprocess.check_call([sys.executable, "-m", "textblob.download_corpora"])
-    
-    return True
-
-import requests
-
-# --- DEPENDENCY AUTO-INSTALLER ---
-# PySastrawi removed as per user request to use wordlist instead.
-
-# --- INDONESIAN WORDLIST SETUP ---
-@st.cache_resource
-def get_indonesian_dictionary():
-    """
-    Downloads and parses the Indonesian token-tag-lemma dictionary.
-    Returns a dictionary mapping token -> lemma.
-    """
-    url = "https://raw.githubusercontent.com/prihantoro-corpus/tokeniser-tagger/main/ID-token-tag-lemma.txt"
-    try:
-        response = requests.get(url)
-        response.raise_for_status()
-        
-        lemma_dict = {}
-        # Expected format: token tag lemma
-        # We will map token (lower) -> lemma
-        # If duplicates exist, later entries will overwrite earlier ones (simple approach)
-        
-        lines = response.text.strip().split('\n')
-        for line in lines:
-            parts = line.strip().split()
-            if len(parts) >= 3:
-                # Assuming first column is token, last is lemma. 
-                # Tag (middle) is ignored for now as we use Stanza tags.
-                token = parts[0]
-                lemma = parts[-1]
-                
-                # key by lowercase token for robustness
-                lemma_dict[token.lower()] = lemma
-                
-        return lemma_dict
-    except Exception as e:
-        st.error(f"Failed to load Indonesian dictionary: {e}")
-        return {}
-
-# --- INDONESIAN STANZA SETUP ---
-@st.cache_resource
-def get_stanza_pipeline():
-    """
-    Initializes the Stanza pipeline for Indonesian.
-    This handles downloading the model if it's not present.
-    """
-    try:
-        # Download stanza model if not exists. 
-        # 'processors': 'tokenize,pos' - lemma processor removed as we use dictionary
-        stanza.download('id', processors='tokenize,pos', verbose=False)
-        
-        # Initialize the pipeline
-        nlp = stanza.Pipeline('id', processors='tokenize,pos', use_gpu=False, verbose=False)
-        
-        return nlp
-    except Exception as e:
-        print(f"Error initializing Indonesian Stanza Pipeline. Error: {e}")
-        return None
-
-# Global Variables (Lazy loading recommended, but here we init for cache)
-JAPANESE_TAGGER = get_japanese_tokenizer()
-ENGLISH_TAGGER_READY = initialize_english_textblob()
-# We initialize stanza on demand or globally? Globally is okay if cached.
-# However, for startup speed, we might want to do it only if selected.
-# But st.cache_resource handles the singleton pattern nicely.
-INDONESIAN_RESOURCES = None # Will be loaded if needed
-
-# --- Core Processing Functions ---
-
 # --- JAPANESE PROCESSING ---
 def run_tagger_japanese(text):
     if JAPANESE_TAGGER is None:
@@ -137,88 +38,56 @@ def run_tagger_english(text):
         results.append(f"{token}\t{pos_tag}\t{lemma}")
     return results
 
-# --- INDONESIAN PROCESSING ---
-def run_tagger_indonesian(text):
-    global INDONESIAN_RESOURCES
-    if INDONESIAN_RESOURCES is None:
-        with st.spinner("Loading Indonesian Model & Dictionary..."):
-            stanza_pipeline = get_stanza_pipeline()
-            lemma_dict = get_indonesian_dictionary()
-            INDONESIAN_RESOURCES = (stanza_pipeline, lemma_dict)
+# --- INDONESIAN TREETAGGER (DOCKER) ---
+def run_tagger_indonesian(text, use_mwu=False):
+    """
+    Runs TreeTagger for Indonesian using a Docker container.
+    Command: docker run -i treetagger-indo [-mwu]
+    """
+    if not text.strip():
+        return []
     
-    stanza_pipeline, lemma_dict = INDONESIAN_RESOURCES
+    cmd = ["docker", "run", "-i", "--rm", "treetagger-indo"]
+    if use_mwu:
+        cmd.append("-mwu")
     
-    if stanza_pipeline is None:
-        return ["Error: Model failed to load."]
-
-    # Stanza processes the text into a Document object
-    doc = stanza_pipeline(text)
-    
-    results = []
-    # Stanza structure: doc -> sentences -> words
-    for sent in doc.sentences:
-        for word in sent.words:
-            token_text = word.text
-            token_lower = token_text.lower()
-            original_pos = word.upos
+    try:
+        # We use utf-8 for stdin/stdout communication with the container
+        process = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding='utf-8'
+        )
+        
+        stdout, stderr = process.communicate(input=text)
+        
+        if process.returncode != 0:
+            st.error(f"TreeTagger Error: {stderr}")
+            return [f"Error\tERROR\t{stderr.strip()}"]
             
-            # Logic: 
-            # 1. Check if full token is in dict override (Case Insensitive)
-            if token_lower in lemma_dict:
-                lemma = lemma_dict[token_lower]
-                results.append(f"{token_text}\t{original_pos}\t{lemma}")
-                continue
-            
-            # 2. Check Clitics
-            split_found = False
-            
-            # 2a. Prefix "ku-"
-            if token_lower.startswith("ku"):
-                stem = token_lower[2:]
-                if stem in lemma_dict:
-                    # Found 'ku-' prefix
-                    # Output 'ku'
-                    results.append(f"ku\tPRON\taku")
-                    # Output stem
-                    stem_lemma = lemma_dict[stem]
-                    results.append(f"{stem}\t{original_pos}\t{stem_lemma}")
-                    split_found = True
-            
-            # 2b. Suffixes "-ku", "-mu", "-nya" (only if not already split by prefix rule)
-            if not split_found:
-                suffixes = [("ku", "aku"), ("mu", "kamu"), ("nya", "dia")]
-                for suffix, suffix_lemma in suffixes:
-                    if token_lower.endswith(suffix):
-                        stem = token_lower[:-len(suffix)]
-                        # Check if stem is valid
-                        if stem in lemma_dict:
-                            # Found suffix
-                            # Output stem
-                            stem_lemma = lemma_dict[stem]
-                            results.append(f"{stem}\t{original_pos}\t{stem_lemma}")
-                            
-                            # Output suffix with Disambiguation Logic
-                            if suffix == "nya":
-                                # If original POS (proxy for stem POS) is VERB -> PRON
-                                # Else -> PRON|DET (Ambiguous)
-                                if original_pos == "VERB":
-                                    suffix_pos = "PRON"
-                                else:
-                                    suffix_pos = "PRON|DET"
-                            else:
-                                suffix_pos = "PRON"
-                                
-                            results.append(f"{suffix}\t{suffix_pos}\t{suffix_lemma}")
-                            split_found = True
-                            break
-            
-            # 3. Fallback: No split logic applied
-            if not split_found:
-                 # Check again if exact case exists (unlikely if lower failed, but safe) or just use token
-                 lemma = lemma_dict.get(token_lower, token_text)
-                 results.append(f"{token_text}\t{original_pos}\t{lemma}")
-            
-    return results
+        results = []
+        # TreeTagger output is tab-separated: token \t POS \t lemma
+        for line in stdout.strip().split('\n'):
+            if line.strip():
+                parts = line.split('\t')
+                if len(parts) >= 3:
+                    # TreeTagger output format matches our expected results list
+                    results.append(line.strip())
+                elif len(parts) == 2:
+                    # Fallback for unexpected format
+                    results.append(f"{parts[0]}\t{parts[1]}\t{parts[0]}")
+                    
+        return results
+        
+    except FileNotFoundError:
+        st.error("Docker not found. Please ensure Docker is installed and in your PATH.")
+        return ["Error\tERROR\tDocker not found"]
+    except Exception as e:
+        st.error(f"Unexpected error calling TreeTagger: {e}")
+        return [f"Error\tERROR\t{str(e)}"]
 
 
 def process_xml_content(xml_string, lang_code, tagger_function):
@@ -372,6 +241,37 @@ def tokenizer_interface(lang_name, lang_code, tagger_function):
             else:
                 st.warning("Please enter some text.")
 
+# --- Global Configuration and State Management ---
+
+# --- JAPANESE TOKENIZER ---
+@st.cache_resource
+def get_japanese_tokenizer():
+    """Initializes and returns the Fugashi Tagger with unidic-lite."""
+    try:
+        tagger = FugashiTagger()
+        return tagger
+    except Exception as e:
+        # Warning instead of error to allow app to run if just one lang fails
+        print(f"Error initializing Japanese Tokenizer: {e}") 
+        return None
+
+# --- ENGLISH TEXTBLOB SETUP ---
+@st.cache_resource
+def initialize_english_textblob():
+    """Ensures TextBlob data is downloaded."""
+    try:
+        import nltk
+        nltk.data.find('taggers/averaged_perceptron_tagger')
+    except LookupError:
+        print("Downloading TextBlob data...")
+        subprocess.check_call([sys.executable, "-m", "textblob.download_corpora"])
+    
+    return True
+
+# Initialize Japanese and English taggers
+JAPANESE_TAGGER = get_japanese_tokenizer()
+ENGLISH_TAGGER_READY = initialize_english_textblob()
+
 def main():
     st.set_page_config(page_title="Multilingual Tagger", layout="wide")
     st.title("🌐 Multilingual Tokenizer")
@@ -388,7 +288,8 @@ def main():
     elif language == 'ENGLISH':
         tokenizer_interface("English", "EN", run_tagger_english)
     elif language == 'INDONESIAN':
-        tokenizer_interface("Indonesian", "ID", run_tagger_indonesian)
+        use_mwu = st.sidebar.checkbox("Use Multi-Word Units (MWU)", value=False)
+        tokenizer_interface("Indonesian", "ID", lambda t: run_tagger_indonesian(t, use_mwu=use_mwu))
 
 if __name__ == "__main__":
     main()
