@@ -59,23 +59,22 @@ def get_indonesian_dictionary():
         response.raise_for_status()
         
         lemma_dict = {}
-        # Expected format: token tag lemma
-        # We will map token (lower) -> lemma
-        # If duplicates exist, later entries will overwrite earlier ones (simple approach)
-        
-        lines = response.text.strip().split('\n')
+        # Use rstrip() to handle different line endings safely
+        lines = response.text.splitlines()
         for line in lines:
-            parts = line.strip().split()
+            line = line.strip()
+            if not line:
+                continue
+            # Split by any whitespace (tabs, spaces)
+            parts = line.split()
             if len(parts) >= 3:
-                # Assuming first column is token, last is lemma. 
-                # Tag (middle) is ignored for now as we use Stanza tags.
-                token = parts[0]
-                lemma = parts[-1]
+                # Token is first, Lemma is last
+                token = parts[0].lower().strip()
+                lemma = parts[-1].strip()
+                lemma_dict[token] = lemma
                 
-                # key by lowercase token for robustness
-                # strip() again to be safe from invisible whitespace characters
-                lemma_dict[token.lower().strip()] = lemma.strip()
-                
+        if not lemma_dict:
+            st.error("Indonesian dictionary is empty after parsing!")
         return lemma_dict
     except Exception as e:
         st.error(f"Failed to load Indonesian dictionary: {e}")
@@ -90,24 +89,18 @@ def get_stanza_pipeline():
     """
     try:
         # Download stanza model if not exists. 
-        # 'processors': 'tokenize,pos' - lemma processor removed as we use dictionary
         stanza.download('id', processors='tokenize,pos', verbose=False)
-        
         # Initialize the pipeline
         nlp = stanza.Pipeline('id', processors='tokenize,pos', use_gpu=False, verbose=False)
-        
         return nlp
     except Exception as e:
-        print(f"Error initializing Indonesian Stanza Pipeline. Error: {e}")
+        st.error(f"Error initializing Indonesian Stanza Pipeline: {e}")
         return None
 
-# Global Variables (Lazy loading recommended, but here we init for cache)
+# Global Variables
 JAPANESE_TAGGER = get_japanese_tokenizer()
 ENGLISH_TAGGER_READY = initialize_english_textblob()
-# We initialize stanza on demand or globally? Globally is okay if cached.
-# However, for startup speed, we might want to do it only if selected.
-# But st.cache_resource handles the singleton pattern nicely.
-INDONESIAN_RESOURCES = None # Will be loaded if needed
+INDONESIAN_RESOURCES = None # Loaded on demand
 
 # --- Core Processing Functions ---
 
@@ -120,7 +113,6 @@ def run_tagger_japanese(text):
     for node in nodes:
         if node.surface:
             token = node.surface
-            # Pos1 is usually top level POS
             pos = node.feature.pos1
             lemma = node.feature.lemma if node.feature.lemma else token
             results.append(f"{token}\t{pos}\t{lemma}")
@@ -130,11 +122,10 @@ def run_tagger_japanese(text):
 def run_tagger_english(text):
     if not ENGLISH_TAGGER_READY:
         return []
-    
     blob = TextBlob(text)
     results = []
     for token, pos_tag in blob.tags:
-        lemma = token.lemmatize() # TextBlob (Word) has lemmatize method
+        lemma = token.lemmatize()
         results.append(f"{token}\t{pos_tag}\t{lemma}")
     return results
 
@@ -148,98 +139,79 @@ def run_tagger_indonesian(text):
             INDONESIAN_RESOURCES = (stanza_pipeline, lemma_dict)
     
     stanza_pipeline, lemma_dict = INDONESIAN_RESOURCES
-    
     if stanza_pipeline is None:
         return ["Error: Model failed to load."]
 
     # Stanza processes the text into a Document object
     doc = stanza_pipeline(text)
-    
     results = []
-    # Stanza structure: doc -> sentences -> words
+    
+    # Debug Container
+    debug_info = []
+
     for sent in doc.sentences:
         for word in sent.words:
             token_text = word.text
-            token_lower = token_text.lower()
+            token_lower = token_text.lower().strip()
             original_pos = word.upos
-
-            # 1. Check Clitics
+            
             split_found = False
             
-            # SIDEBAR DEBUG (Optional, can be removed after debugging)
-            if "se" in token_lower:
-                st.sidebar.write(f"**DEBUG (ID):** Checking '{token_lower}'")
-                st.sidebar.write(f"- Stem: '{token_lower[2:]}'")
-                st.sidebar.write(f"- Stem in Dict? {token_lower[2:] in lemma_dict}")
-                st.sidebar.write(f"- Dict Size: {len(lemma_dict)}")
-                if "batang" in lemma_dict:
-                    st.sidebar.write(f"- 'batang' Lemma found!")
-                else:
-                    st.sidebar.write(f"- 'batang' NOT FOUND in dict")
+            # 1. Clitic Splitting (Takes Precedence)
             
-            # 1a. Prefix "ku-" and "se-"
-            if token_lower.startswith("ku"):
+            # 1a. Prefix Clitics (ku-, se-)
+            # ku- (length 2)
+            if token_lower.startswith("ku") and len(token_lower) > 2:
                 stem = token_lower[2:]
                 if stem in lemma_dict:
-                    # Found 'ku-' prefix
-                    # Output 'ku'
                     results.append(f"ku\tPRON\taku")
-                    # Output stem
-                    stem_lemma = lemma_dict[stem]
-                    results.append(f"{stem}\t{original_pos}\t{stem_lemma}")
+                    results.append(f"{stem}\t{original_pos}\t{lemma_dict[stem]}")
                     split_found = True
+                    debug_info.append(f"Split 'ku-': {token_lower} -> ku + {stem}")
             
-            if not split_found and token_lower.startswith("se"):
+            # se- (length 2)
+            if not split_found and token_lower.startswith("se") and len(token_lower) > 2:
                 stem = token_lower[2:]
                 if stem in lemma_dict:
-                    # Found 'se-' prefix
-                    # Output 'se'
                     results.append(f"se\tDET\tsatu")
-                    # Output stem
-                    stem_lemma = lemma_dict[stem]
-                    results.append(f"{stem}\t{original_pos}\t{stem_lemma}")
+                    results.append(f"{stem}\t{original_pos}\t{lemma_dict[stem]}")
                     split_found = True
+                    debug_info.append(f"Split 'se-': {token_lower} -> se + {stem}")
             
-            # 1b. Suffixes "-ku", "-mu", "-nya" (only if not already split by prefix rule)
+            # 1b. Suffix Clitics (-ku, -mu, -nya)
             if not split_found:
                 suffixes = [("ku", "aku"), ("mu", "kamu"), ("nya", "dia")]
                 for suffix, suffix_lemma in suffixes:
-                    if token_lower.endswith(suffix):
+                    if token_lower.endswith(suffix) and len(token_lower) > len(suffix):
                         stem = token_lower[:-len(suffix)]
-                        # Check if stem is valid
                         if stem in lemma_dict:
-                            # Found suffix
-                            # Output stem
-                            stem_lemma = lemma_dict[stem]
-                            results.append(f"{stem}\t{original_pos}\t{stem_lemma}")
-                            
-                            # Output suffix with Disambiguation Logic
+                            results.append(f"{stem}\t{original_pos}\t{lemma_dict[stem]}")
+                            # Disambiguation for -nya
                             if suffix == "nya":
-                                # If original POS (proxy for stem POS) is VERB -> PRON
-                                # Else -> PRON|DET (Ambiguous)
-                                if original_pos == "VERB":
-                                    suffix_pos = "PRON"
-                                else:
-                                    suffix_pos = "PRON|DET"
+                                suffix_pos = "PRON" if original_pos == "VERB" else "PRON|DET"
                             else:
                                 suffix_pos = "PRON"
-                                
                             results.append(f"{suffix}\t{suffix_pos}\t{suffix_lemma}")
                             split_found = True
+                            debug_info.append(f"Split Suffix: {token_lower} -> {stem} + {suffix}")
                             break
             
-            # 2. Check if full token is in dict override (Case Insensitive)
+            # 2. Dictionary Match (If no clitic split)
             if not split_found:
+                lemma = lemma_dict.get(token_lower, token_text)
+                results.append(f"{token_text}\t{original_pos}\t{lemma}")
                 if token_lower in lemma_dict:
-                    lemma = lemma_dict[token_lower]
-                    results.append(f"{token_text}\t{original_pos}\t{lemma}")
-                    split_found = True
+                    debug_info.append(f"Dict Match: {token_lower} -> {lemma}")
+                else:
+                    debug_info.append(f"Fallback: {token_lower} (not in dict)")
 
-            # 3. Fallback: No split logic applied
-            if not split_found:
-                 # Check again if exact case exists (unlikely if lower failed, but safe) or just use token
-                 lemma = lemma_dict.get(token_lower, token_text)
-                 results.append(f"{token_text}\t{original_pos}\t{lemma}")
+    # Show Debugging info if toggle is on (or just show it for now)
+    if debug_info:
+        with st.expander("Indonesian Tagging Debug Log", expanded=False):
+            st.write(f"Dictionary Size: {len(lemma_dict)} entries")
+            st.write(f"Is 'batang' in dict? {'batang' in lemma_dict}")
+            for info in debug_info:
+                st.text(info)
             
     return results
 
@@ -400,6 +372,9 @@ def main():
     st.title("🌐 Multilingual Tokenizer")
     
     st.sidebar.title("Configuration")
+    if st.sidebar.button("Clear App Cache"):
+        st.cache_resource.clear()
+        st.rerun()
     language = st.sidebar.radio(
         "Choose Language:",
         ('JAPANESE', 'ENGLISH', 'INDONESIAN'),
