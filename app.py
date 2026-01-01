@@ -1,364 +1,170 @@
 import streamlit as st
 import pandas as pd
 import os
-import zipfile
 import re
-from io import BytesIO
-import subprocess
 import sys
+import subprocess
 import xml.etree.ElementTree as ET
+from io import BytesIO
+import zipfile
 
-# Import language libraries
-from fugashi import Tagger as FugashiTagger # for Japanese
-from textblob import TextBlob # for English
-# --- JAPANESE PROCESSING ---
-def run_tagger_japanese(text):
-    if JAPANESE_TAGGER is None:
-        return []
-    nodes = JAPANESE_TAGGER.parseToNodeList(text)
-    results = []
-    for node in nodes:
-        if node.surface:
-            token = node.surface
-            # Pos1 is usually top level POS
-            pos = node.feature.pos1
-            lemma = node.feature.lemma if node.feature.lemma else token
-            results.append(f"{token}\t{pos}\t{lemma}")
-    return results
+# =====================
+# JAPANESE
+# =====================
+from fugashi import Tagger as FugashiTagger
 
-# --- ENGLISH PROCESSING ---
-def run_tagger_english(text):
-    if not ENGLISH_TAGGER_READY:
-        return []
-    
-    blob = TextBlob(text)
-    results = []
-    for token, pos_tag in blob.tags:
-        lemma = token.lemmatize() # TextBlob (Word) has lemmatize method
-        results.append(f"{token}\t{pos_tag}\t{lemma}")
-    return results
-
-import requests
-import stanza
-
-# --- INDONESIAN WORDLIST SETUP ---
 @st.cache_resource
-def get_indonesian_dictionary():
-    """Mapping from Indonesian token (lower) -> lemma."""
-    url = "https://raw.githubusercontent.com/prihantoro-corpus/tokeniser-tagger/main/ID-token-tag-lemma.txt"
+def get_japanese_tagger():
     try:
-        response = requests.get(url)
-        response.raise_for_status()
-        lemma_dict = {}
-        for line in response.text.strip().split('\n'):
-            parts = line.strip().split()
-            if len(parts) >= 3:
-                lemma_dict[parts[0].lower()] = parts[-1]
-        return lemma_dict
-    except:
-        return {}
-
-# --- INDONESIAN STANZA SETUP ---
-@st.cache_resource
-def get_stanza_pipeline():
-    """Initializes Stanza for Indonesian."""
-    try:
-        stanza.download('id', processors='tokenize,pos', verbose=False)
-        return stanza.Pipeline('id', processors='tokenize,pos', use_gpu=False, verbose=False)
-    except:
-        return None
-
-INDONESIAN_RESOURCES = None
-
-def run_stanza_indonesian(text):
-    """Fallback function: Stanza + Wordlist processing."""
-    global INDONESIAN_RESOURCES
-    if INDONESIAN_RESOURCES is None:
-        INDONESIAN_RESOURCES = (get_stanza_pipeline(), get_indonesian_dictionary())
-    
-    pipeline, lemma_dict = INDONESIAN_RESOURCES
-    if pipeline is None:
-        return ["Error\tERROR\tModel failed to load."]
-        
-    doc = pipeline(text)
-    results = []
-    for sent in doc.sentences:
-        for word in sent.words:
-            t, lower, pos = word.text, word.text.lower(), word.upos
-            
-            # Dictionary override
-            if lower in lemma_dict:
-                results.append(f"{t}\t{pos}\t{lemma_dict[lower]}")
-                continue
-            
-            # Simple Clitic logic
-            split_found = False
-            # Prefix ku-
-            if lower.startswith("ku") and lower[2:] in lemma_dict:
-                results.append(f"ku\tPRON\taku")
-                results.append(f"{t[2:]}\t{pos}\t{lemma_dict[lower[2:]]}")
-                split_found = True
-            # Suffixes
-            elif not split_found:
-                for suf, l in [("nya", "dia"), ("mu", "kamu"), ("ku", "aku")]:
-                    if lower.endswith(suf) and lower[:-len(suf)] in lemma_dict:
-                        results.append(f"{t[:-len(suf)]}\t{pos}\t{lemma_dict[lower[:-len(suf)]]}")
-                        # Suffix disambiguation
-                        s_pos = "PRON" if pos == "VERB" or suf != "nya" else "PRON|DET"
-                        results.append(f"{suf}\t{s_pos}\t{l}")
-                        split_found = True
-                        break
-            
-            if not split_found:
-                results.append(f"{t}\t{pos}\t{lemma_dict.get(lower, t)}")
-    return results
-
-# --- INDONESIAN TREETAGGER (NATIVE LINUX) ---
-def run_tagger_indonesian(text, use_mwu=False):
-    """
-    Runs TreeTagger natively on Linux using the manually uploaded binaries.
-    """
-    if not text.strip(): return []
-
-    tt_bin = "./treetagger/bin/tree-tagger"
-    tt_cmd = "./treetagger/cmd/tag-indonesian"
-    
-    # Check if we are on Linux (Streamlit Cloud)
-    if sys.platform.startswith("linux"):
-        # Fix permissions if needed for manually uploaded binaries
-        if os.path.exists(tt_bin) and not os.access(tt_bin, os.X_OK):
-            try:
-                subprocess.run(["chmod", "+x", tt_bin], check=True)
-                subprocess.run(["chmod", "+x", tt_cmd], check=True)
-                # Also fix all perl scripts in cmd/
-                subprocess.run("chmod +x ./treetagger/cmd/*.perl", shell=True, check=True)
-            except Exception as e:
-                st.warning(f"Note: Could not set executable permissions: {e}")
-
-    # Execute the Pipeline
-    if os.path.exists(tt_cmd):
-        cmd = ["bash", tt_cmd]
-        if use_mwu: cmd.append("-mwu")
-        
-        try:
-            process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8')
-            stdout, stderr = process.communicate(input=text)
-            
-            if process.returncode != 0:
-                st.error(f"TreeTagger Error: {stderr}")
-                return [f"Error\tERROR\t{stderr.strip()}"]
-                
-            return [l for l in stdout.strip().split('\n') if l.strip()]
-        except Exception as e:
-            st.error(f"Execution Error: {e}")
-            return run_stanza_indonesian(text)
-    else:
-        # Fallback for Windows local testing or missing files
-        if not sys.platform.startswith("linux"):
-            st.info("💡 Native TreeTagger (Linux) not found. Using Lightweight mode.")
-        return run_stanza_indonesian(text)
-
-
-def process_xml_content(xml_string, lang_code, tagger_function):
-    """
-    Parses the XML string and tags ONLY the plain text content, 
-    preserving all XML tags and attributes.
-    """
-    temp_root_tag = 'TEMP_WRAPPER'
-    cleaned_xml_string = re.sub(r'<\?xml[^>]*\?>', '', xml_string, flags=re.IGNORECASE).strip()
-    wrapped_xml = f"<{temp_root_tag}>{cleaned_xml_string}</{temp_root_tag}>"
-    
-    try:
-        root = ET.fromstring(wrapped_xml)
-    except ET.ParseError as e:
-        st.warning(f"Input failed XML parsing ({e}). Processing as raw text only.")
-        tagged_lines = tagger_function(xml_string)
-        return f'<text lang="{lang_code}">\n' + "\n".join(tagged_lines) + '\n</text>'
-        
-    def traverse_and_tag(element):
-        if element.text and element.text.strip():
-            tagged_lines = tagger_function(element.text)
-            element.text = '\n' + '\n'.join(tagged_lines) + '\n'
-
-        for child in element:
-            traverse_and_tag(child)
-
-        if element.tail and element.tail.strip():
-            tagged_lines = tagger_function(element.tail)
-            element.tail = '\n' + '\n'.join(tagged_lines) + '\n'
-
-    traverse_and_tag(root)
-    
-    full_xml = ET.tostring(root, encoding='unicode')
-    full_xml = re.sub(r'^<TEMP_WRAPPER>', '', full_xml)
-    full_xml = re.sub(r'</TEMP_WRAPPER>$', '', full_xml).strip()
-    
-    return full_xml
-
-def process_text(text, lang_code, tagger_function):
-    return process_xml_content(text, lang_code, tagger_function)
-
-
-# --- XML Creation and Zipping ---
-def create_output_file_content(processed_xml, original_filename):
-    base_filename = os.path.splitext(original_filename)[0]
-    sanitized_base_name = re.sub(r' \(\d+\)$', '', base_filename).strip()
-    final_output = f'<?xml version="1.0" encoding="UTF-8"?>\n{processed_xml}'
-    return final_output, f"{sanitized_base_name}_tagged.xml"
-
-def create_zip_archive(output_data):
-    zip_buffer = BytesIO()
-    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
-        for original_name, processed_content in output_data.items():
-            final_content, xml_name = create_output_file_content(processed_content, original_name)
-            zf.writestr(xml_name, final_content.encode('utf-8'))
-    zip_buffer.seek(0)
-    return zip_buffer.getvalue()
-
-
-# --- Streamlit UI Components ---
-
-def tokenizer_interface(lang_name, lang_code, tagger_function):
-    st.header(f"🌎 {lang_name} Tokenizer ({lang_code})")
-    st.markdown("---")
-    
-    # Input Method Selection
-    input_method = st.radio("Choose Input Method:", ["📂 File Upload", "✍️ Direct Input"], horizontal=True)
-    st.markdown("---")
-
-    # --- MODE 1: FILE UPLOAD ---
-    if input_method == "📂 File Upload":
-        st.subheader("Upload Text or XML Files")
-        uploaded_files = st.file_uploader(
-            "Choose files",
-            type=['txt', 'xml'],
-            accept_multiple_files=True,
-            key=f"uploader_{lang_code}"
-        )
-
-        if uploaded_files:
-            if st.button(f"Start Tagging", key=f"btn_upload_{lang_code}"):
-                output_data = {}
-                progress_bar = st.progress(0, text="Processing files...")
-                
-                for i, uploaded_file in enumerate(uploaded_files):
-                    filename = uploaded_file.name
-                    try:
-                        content_bytes = uploaded_file.read()
-                        text = content_bytes.decode('utf-8')
-                        processed_xml = process_text(text, lang_code, tagger_function)
-                        output_data[filename] = processed_xml
-                        st.success(f"✅ Processed: **{filename}**")
-                    except Exception as e:
-                        st.error(f"❌ Failed to process {filename}: {e}")
-                    
-                    progress_bar.progress((i + 1) / len(uploaded_files), text=f"Processed {i+1} of {len(uploaded_files)}")
-                
-                progress_bar.empty()
-                
-                if output_data:
-                    zip_bytes = create_zip_archive(output_data)
-                    st.download_button(
-                        label=f"⬇️ Download Results",
-                        data=zip_bytes,
-                        file_name=f"{lang_code.lower()}_tagged.zip",
-                        mime="application/zip",
-                        key=f"dl_upload_{lang_code}"
-                    )
-    
-    # --- MODE 2: DIRECT INPUT ---
-    elif input_method == "✍️ Direct Input":
-        st.subheader("Type or Paste Text")
-        user_input = st.text_area("Enter text here:", height=200, key=f"text_input_{lang_code}")
-        
-        if st.button("Tag Text", key=f"btn_input_{lang_code}"):
-            if user_input.strip():
-                with st.spinner("Processing..."):
-                    # Process and get list of strings
-                    try:
-                        tagged_lines = tagger_function(user_input)
-                        
-                        # PREVIEW: Create DataFrame
-                        data = []
-                        for line in tagged_lines:
-                            parts = line.split('\t')
-                            if len(parts) == 3:
-                                data.append({"Token": parts[0], "POS": parts[1], "Lemma": parts[2]})
-                        
-                        if data:
-                            st.write("### Result Preview")
-                            df = pd.DataFrame(data)
-                            st.dataframe(df, use_container_width=True)
-                            
-                            # DOWNLOAD: Create XML
-                            # Wrap wrapped lines into XML structure
-                            full_xml = f'<text lang="{lang_code}">\n' + "\n".join(tagged_lines) + '\n</text>'
-                            final_output = f'<?xml version="1.0" encoding="UTF-8"?>\n{full_xml}'
-                            
-                            st.download_button(
-                                label="⬇️ Download XML",
-                                data=final_output,
-                                file_name=f"{lang_code.lower()}_input_tagged.xml",
-                                mime="text/xml",
-                                key=f"dl_input_{lang_code}"
-                            )
-                        else:
-                            st.warning("No tokens found.")
-                            
-                    except Exception as e:
-                        st.error(f"Error processing text: {e}")
-            else:
-                st.warning("Please enter some text.")
-
-# --- Global Configuration and State Management ---
-
-# --- JAPANESE TOKENIZER ---
-@st.cache_resource
-def get_japanese_tokenizer():
-    """Initializes and returns the Fugashi Tagger with unidic-lite."""
-    try:
-        tagger = FugashiTagger()
-        return tagger
+        return FugashiTagger()
     except Exception as e:
-        # Warning instead of error to allow app to run if just one lang fails
-        print(f"Error initializing Japanese Tokenizer: {e}") 
+        st.warning(f"Japanese tagger failed: {e}")
         return None
 
-# --- ENGLISH TEXTBLOB SETUP ---
+JP_TAGGER = get_japanese_tagger()
+
+def run_tagger_japanese(text):
+    if not JP_TAGGER:
+        return []
+    out = []
+    for node in JP_TAGGER.parseToNodeList(text):
+        if node.surface:
+            pos = node.feature.pos1
+            lemma = node.feature.lemma or node.surface
+            out.append(f"{node.surface}\t{pos}\t{lemma}")
+    return out
+
+# =====================
+# ENGLISH
+# =====================
+from textblob import TextBlob
+
 @st.cache_resource
-def initialize_english_textblob():
-    """Ensures TextBlob data is downloaded."""
+def init_textblob():
     try:
         import nltk
         nltk.data.find('taggers/averaged_perceptron_tagger')
     except LookupError:
-        print("Downloading TextBlob data...")
-        subprocess.check_call([sys.executable, "-m", "textblob.download_corpora"])
-    
+        subprocess.check_call([sys.executable, '-m', 'textblob.download_corpora'])
     return True
 
-# Initialize Japanese and English taggers
-JAPANESE_TAGGER = get_japanese_tokenizer()
-ENGLISH_TAGGER_READY = initialize_english_textblob()
+EN_READY = init_textblob()
 
+def run_tagger_english(text):
+    if not EN_READY:
+        return []
+    blob = TextBlob(text)
+    return [f"{w}\t{p}\t{w.lemmatize()}" for w, p in blob.tags]
+
+# =====================
+# INDONESIAN (TreeTagger native)
+# =====================
+TT_BIN = "treetagger/bin/tree-tagger"
+TT_CMD = "treetagger/cmd/tag-indonesian"
+TT_PAR = "treetagger/lib/indonesian_v311225.par"
+
+@st.cache_resource
+def ensure_exec():
+    if sys.platform.startswith('linux'):
+        try:
+            subprocess.run(["chmod", "+x", TT_BIN], check=False)
+            subprocess.run(["chmod", "+x", TT_CMD], check=False)
+            subprocess.run("chmod +x treetagger/cmd/*.perl", shell=True, check=False)
+        except Exception:
+            pass
+    return True
+
+ensure_exec()
+
+def run_tagger_indonesian(text, use_mwu=False):
+    if not text.strip():
+        return []
+
+    if not os.path.exists(TT_PAR):
+        return ["ERROR\tERROR\tParameter file not found"]
+
+    cmd = ["bash", TT_CMD]
+    if use_mwu:
+        cmd.append("-mwu")
+
+    try:
+        p = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding='utf-8'
+        )
+        out, err = p.communicate(text)
+        if p.returncode != 0:
+            return [f"ERROR\tERROR\t{err.strip()}"]
+        return [l for l in out.splitlines() if l.strip()]
+    except Exception as e:
+        return [f"ERROR\tERROR\t{e}"]
+
+# =====================
+# XML-safe processing
+# =====================
+def process_text(text, lang, tagger):
+    try:
+        root = ET.fromstring(f"<r>{text}</r>")
+        for el in root.iter():
+            if el.text and el.text.strip():
+                tagged = tagger(el.text)
+                el.text = '\n' + '\n'.join(tagged) + '\n'
+        xml = ET.tostring(root, encoding='unicode')
+        return re.sub(r'^<r>|</r>$', '', xml)
+    except ET.ParseError:
+        tagged = tagger(text)
+        return f'<text lang="{lang}">\n' + '\n'.join(tagged) + '\n</text>'
+
+# =====================
+# UI
+# =====================
+def tokenizer_ui(name, code, tagger, mwu=False):
+    st.header(f"{name} ({code})")
+    mode = st.radio("Input mode", ["Direct input", "File upload"], horizontal=True)
+
+    if mode == "Direct input":
+        txt = st.text_area("Text", height=200)
+        if st.button("Tag"):
+            res = tagger(txt) if code != 'ID' else tagger(txt, mwu)
+            rows = [r.split('\t') for r in res if '\t' in r]
+            if rows:
+                df = pd.DataFrame(rows, columns=["Token", "POS", "Lemma"])
+                st.dataframe(df, use_container_width=True)
+
+    else:
+        files = st.file_uploader("Upload txt/xml", type=['txt', 'xml'], accept_multiple_files=True)
+        if files and st.button("Process files"):
+            out = {}
+            for f in files:
+                text = f.read().decode('utf-8')
+                tagged = process_text(text, code, tagger if code != 'ID' else lambda t: tagger(t, mwu))
+                out[f.name] = f"<?xml version='1.0' encoding='UTF-8'?>\n{tagged}"
+            buf = BytesIO()
+            with zipfile.ZipFile(buf, 'w') as z:
+                for k, v in out.items():
+                    z.writestr(k.replace('.txt', '_tagged.xml'), v)
+            st.download_button("Download ZIP", buf.getvalue(), "tagged.zip")
+
+# =====================
+# MAIN
+# =====================
 def main():
-    st.set_page_config(page_title="Multilingual Tagger", layout="wide")
-    st.title("🌐 Multilingual Tokenizer")
-    
-    st.sidebar.title("Configuration")
-    language = st.sidebar.radio(
-        "Choose Language:",
-        ('JAPANESE', 'ENGLISH', 'INDONESIAN'),
-        index=0
-    )
-    
-    if language == 'JAPANESE':
-        tokenizer_interface("Japanese", "JP", run_tagger_japanese)
-    elif language == 'ENGLISH':
-        tokenizer_interface("English", "EN", run_tagger_english)
-    elif language == 'INDONESIAN':
-        use_mwu = st.sidebar.checkbox("Use Multi-Word Units (MWU)", value=False)
-        tokenizer_interface("Indonesian", "ID", lambda t: run_tagger_indonesian(t, use_mwu=use_mwu))
+    st.set_page_config("Multilingual Tagger", layout="wide")
+    st.title("🌐 Multilingual Tokenizer & Tagger")
 
-if __name__ == "__main__":
+    lang = st.sidebar.radio("Language", ['JAPANESE', 'ENGLISH', 'INDONESIAN'])
+
+    if lang == 'JAPANESE':
+        tokenizer_ui("Japanese", "JP", run_tagger_japanese)
+    elif lang == 'ENGLISH':
+        tokenizer_ui("English", "EN", run_tagger_english)
+    else:
+        use_mwu = st.sidebar.checkbox("Use MWU", False)
+        tokenizer_ui("Indonesian", "ID", run_tagger_indonesian, use_mwu)
+
+if __name__ == '__main__':
     main()
