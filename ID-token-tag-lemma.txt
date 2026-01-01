@@ -1,4 +1,5 @@
 se- CD satu
+batang NN batang
 se cd satu
 .	NNP	.
 !	Z	!
@@ -61677,3 +61678,4 @@ zuriah	NN	zuriah
 zuriat	NN	zuriat
 
 zus	NN	zus
+
