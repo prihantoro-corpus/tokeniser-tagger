@@ -1,3 +1,5 @@
+se- CD satu
+se cd satu
 .	NNP	.
 !	Z	!
 "	Z	"		
@@ -61673,4 +61675,5 @@ zulu	NN	zulu
 zurafah	NN	zurafah
 zuriah	NN	zuriah
 zuriat	NN	zuriat
+
 zus	NN	zus
