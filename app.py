@@ -116,26 +116,26 @@ def run_stanza_indonesian(text):
 # --- INDONESIAN TREETAGGER (NATIVE LINUX) ---
 def run_tagger_indonesian(text, use_mwu=False):
     """
-    Runs TreeTagger natively on Linux.
-    Automatically installs TreeTagger if not found.
+    Runs TreeTagger natively on Linux using the manually uploaded binaries.
     """
     if not text.strip(): return []
 
     tt_bin = "./treetagger/bin/tree-tagger"
     tt_cmd = "./treetagger/cmd/tag-indonesian"
     
-    # 1. Check/Install TreeTagger if on Linux
+    # Check if we are on Linux (Streamlit Cloud)
     if sys.platform.startswith("linux"):
-        if not os.path.exists(tt_bin):
-            with st.spinner("Setting up TreeTagger for Linux..."):
-                try:
-                    subprocess.run(["sh", "install_treetagger.sh"], check=True, capture_output=True)
-                    st.success("TreeTagger installed successfully!")
-                except Exception as e:
-                    st.error(f"Failed to install TreeTagger: {e}")
-                    return run_stanza_indonesian(text) # Final fallback
+        # Fix permissions if needed for manually uploaded binaries
+        if os.path.exists(tt_bin) and not os.access(tt_bin, os.X_OK):
+            try:
+                subprocess.run(["chmod", "+x", tt_bin], check=True)
+                subprocess.run(["chmod", "+x", tt_cmd], check=True)
+                # Also fix all perl scripts in cmd/
+                subprocess.run("chmod +x ./treetagger/cmd/*.perl", shell=True, check=True)
+            except Exception as e:
+                st.warning(f"Note: Could not set executable permissions: {e}")
 
-    # 2. Run Native Command
+    # Execute the Pipeline
     if os.path.exists(tt_cmd):
         cmd = ["bash", tt_cmd]
         if use_mwu: cmd.append("-mwu")
@@ -153,9 +153,9 @@ def run_tagger_indonesian(text, use_mwu=False):
             st.error(f"Execution Error: {e}")
             return run_stanza_indonesian(text)
     else:
-        # Fallback for Windows or missing installation
+        # Fallback for Windows local testing or missing files
         if not sys.platform.startswith("linux"):
-            st.info("💡 Native TreeTagger is only available on Linux. Using Lightweight mode.")
+            st.info("💡 Native TreeTagger (Linux) not found. Using Lightweight mode.")
         return run_stanza_indonesian(text)
 
 
